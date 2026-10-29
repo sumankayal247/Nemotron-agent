@@ -47,9 +47,9 @@ from nemotron_agent.tui.widgets import (
 # (style, text) segments.
 Block: TypeAlias = list[list[tuple[str, str]]]
 
-# Fixed overhead lines outside the scrolling panes (input, status,
+# Fixed overhead lines outside the scrolling panes (input, borders, status,
 # plus a little breathing room). Used to clamp scroll offsets.
-_OVERHEAD_LINES = 3
+_OVERHEAD_LINES = 5
 
 
 def _pane_height(rows: int) -> int:
@@ -140,6 +140,8 @@ class NemotronTuiApp(Application):
         self._input_window = Window(
             self._input_control, height=1, style=self.theme.border
         )
+        self._top_border = Window(char="─", height=1, style="fg:#ffffff")
+        self._bottom_border = Window(char="─", height=1, style="fg:#ffffff")
         self._header_window = Window(
             FormattedTextControl(text=lambda: _flatten_block(self._render_header())),
             height=9,
@@ -169,7 +171,9 @@ class NemotronTuiApp(Application):
                     content=self._modal_window,
                     filter=Condition(lambda: self._modal is not None),
                 ),
+                self._top_border,
                 self._input_window,
+                self._bottom_border,
                 self._status_window,
             ]
         )
