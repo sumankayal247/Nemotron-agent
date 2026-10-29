@@ -86,6 +86,16 @@ class UpdateManager:
         except PackageNotFoundError:
             dist = None
 
+        location = ""
+        if dist is not None:
+            location = str(getattr(dist, "_path", "") or "")
+        elif root is not None:
+            location = str(root)
+
+        # Pipx environments should always be identified as PIPX
+        if "pipx/venvs" in location or "pipx" in sys.prefix:
+            return InstallMethod.PIPX
+
         direct_url: dict = {}
         if dist is not None:
             try:
@@ -103,15 +113,6 @@ class UpdateManager:
         if root is not None:
             if self._git_root(root) is not None:
                 return InstallMethod.GIT
-
-        location = ""
-        if dist is not None:
-            location = str(getattr(dist, "_path", "") or "")
-        elif root is not None:
-            location = str(root)
-
-        if "pipx/venvs" in location or "pipx" in sys.prefix:
-            return InstallMethod.PIPX
 
         if shutil.which("pipx"):
             try:
