@@ -26,6 +26,8 @@ from typing import Callable
 
 PACKAGE_NAME = "nemotron-agent"
 PYPI_URL = f"https://pypi.org/pypi/{PACKAGE_NAME}/json"
+GITHUB_REPO = "sumankayal247/Nemotron-agent"
+GITHUB_COMMITS_URL = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
 
 
 class InstallMethod(str, enum.Enum):
@@ -172,22 +174,39 @@ class UpdateManager:
         return __version__
 
     def fetch_latest_version(self) -> str | None:
-        """Latest release version from PyPI, or None if unavailable."""
+        """Latest release version from PyPI (or GitHub main commit), or None if unavailable."""
 
         if self._network is not None:
             return self._network()
+        # 1. First check PyPI
         try:
             req = urllib.request.Request(
                 PYPI_URL,
                 headers={"Accept": "application/json", "User-Agent": "nemotron-agent-update-check"},
             )
             with urllib.request.urlopen(req, timeout=self.fetch_timeout) as response:
-                if response.status != 200:
-                    return None
-                data = json.loads(response.read().decode("utf-8"))
-            return str(data["info"]["version"])
+                if response.status == 200:
+                    data = json.loads(response.read().decode("utf-8"))
+                    return str(data["info"]["version"])
         except Exception:
-            return None
+            pass
+
+        # 2. If not published to PyPI yet, check GitHub repository latest commit
+        try:
+            req = urllib.request.Request(
+                GITHUB_COMMITS_URL,
+                headers={"Accept": "application/json", "User-Agent": "nemotron-agent-update-check"},
+            )
+            with urllib.request.urlopen(req, timeout=self.fetch_timeout) as response:
+                if response.status == 200:
+                    data = json.loads(response.read().decode("utf-8"))
+                    sha = str(data.get("sha", "")[:7])
+                    if sha:
+                        return f"git-{sha}"
+        except Exception:
+            pass
+
+        return None
 
     def check_for_update(self) -> UpdateInfo:
         """Gather current/latest version info without modifying anything."""
@@ -200,7 +219,12 @@ class UpdateManager:
             method=self.detect_install_method(),
         )
         if latest is not None:
-            info.available = _parse_version(latest) > _parse_version(current)
+            if latest.startswith("git-"):
+                current_short = current.replace("git-", "")[:7]
+                latest_short = latest.replace("git-", "")[:7]
+                info.available = current_short != latest_short
+            else:
+                info.available = _parse_version(latest) > _parse_version(current)
         if info.method == InstallMethod.GIT:
             info.dirty = self.is_dirty()
         return info
@@ -252,7 +276,7 @@ class UpdateManager:
             lines.append(f"Latest version: {info.latest}")
             lines.append("Update available." if info.available else "You are up to date.")
         else:
-            lines.append("Latest version: unable to reach PyPI.")
+            lines.append("Latest version: unable to reach PyPI or GitHub.")
         if info.error:
             lines.append(f"Note: {info.error}")
         if info.dirty:

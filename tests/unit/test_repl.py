@@ -1612,10 +1612,14 @@ def test_update_slash_command_reports_status(tmp_path):
     joined = "\n".join(output)
     assert "Install method:" in joined
 
-    # No update should be available (or unreachable); --yes must not crash.
+    # No update should be available (or unreachable, or working tree dirty); --yes must not crash.
     dispatch(env, "/update --yes")
     joined = "\n".join(output)
-    assert "Nothing to update" in joined or "unable to reach PyPI" in joined
+    assert (
+        "Nothing to update" in joined
+        or "unable to reach PyPI" in joined
+        or "Refusing to update: uncommitted changes" in joined
+    )
 
 
 def test_model_list_uses_saved_vision_capability_override(tmp_path):

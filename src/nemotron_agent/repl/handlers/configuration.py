@@ -193,12 +193,10 @@ class ConfigurationCommands:
             f"Install method: {info.method.value}",
         ]
         if info.latest:
-            lines.append(
-                f"Latest version: {info.latest} "
-                + ("(update available)" if info.available else "(up to date)")
-            )
+            status_text = "(update available)" if info.available else "(up to date)"
+            lines.append(f"Latest version: {info.latest} {status_text}")
         else:
-            lines.append("Latest version: unable to reach PyPI")
+            lines.append("Latest version: unable to check (PyPI/GitHub unreachable)")
         if info.error:
             lines.append(f"Note: {info.error}")
         if info.dirty:
@@ -217,6 +215,10 @@ class ConfigurationCommands:
             return
 
         result = mgr.apply_update(check_only=False, yes=True, restart_on_success=True)
+        if not result.ok and "Refusing to update: uncommitted changes" in result.message:
+            # Keep consistent output for uncommitted git changes
+            self.output(result.message)
+            return
         self.output(result.message)
 
     def cmd_ping(self, inv: Invocation) -> None:
