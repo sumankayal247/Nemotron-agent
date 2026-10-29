@@ -70,7 +70,7 @@ def _inline_segments(text: str, base_style: str) -> StyledLine:
 _FENCE = re.compile(r"^(\s*)```(\w*)\s*$")
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET = re.compile(r"^(\s*)([*\-+])\s+(.*)$")
-_NUMBERED = re.compile(r"^(\s*)\d+\.\s+(.*)$")
+_NUMBERED = re.compile(r"^(\s*)(\d+)\.\s+(.*)$")
 _BLOCKQUOTE = re.compile(r"^(\s*)>\s?(.*)$")
 _TABLE_SEP = re.compile(r"^\s*\|?\s*:?-+(:?-+)*:?\s*\|?\s*$")
 _HR = re.compile(r"^(\s*)([*\-_])(\s*\2){2,}\s*$")
@@ -146,8 +146,9 @@ def _parse_blocks(text: str) -> list[_Block]:
         m = _NUMBERED.match(line)
         if m:
             flush()
+            parsed_num = int(m.group(2)) if m.group(2).isdigit() else len(blocks) + 1
             blocks.append(
-                _Block(kind="numbered", lines=[m.group(3)], level=len(m.group(1)) // 2, number=len(blocks) + 1)
+                _Block(kind="numbered", lines=[m.group(3)], level=len(m.group(1)) // 2, number=parsed_num)
             )
             continue
         m = _BLOCKQUOTE.match(line)
