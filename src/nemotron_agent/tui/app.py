@@ -46,9 +46,9 @@ from nemotron_agent.tui.widgets import (
 # (style, text) segments.
 Block: TypeAlias = list[list[tuple[str, str]]]
 
-# Fixed overhead lines outside the scrolling panes (header, input, status,
+# Fixed overhead lines outside the scrolling panes (input, status,
 # plus a little breathing room). Used to clamp scroll offsets.
-_OVERHEAD_LINES = 11
+_OVERHEAD_LINES = 3
 
 
 def _pane_height(rows: int) -> int:
@@ -74,18 +74,19 @@ def _flatten_block(lines: list) -> list[tuple[str, str]]:
 def _icon_for_output(text: str) -> tuple[str, str]:
     """Return (icon, remainder) for agent progress lines printed during a task."""
     if text.startswith("[Turn "):
-        return ("⟳ ", text)
+        return ("● ", text)
     if text.startswith("[Tool "):
-        return ("⟳ ", text)
+        # Antigravity style: ● ToolName(args)
+        return ("● ", text)
     if text.startswith("Agent plan:"):
-        return ("📋 ", text)
+        return ("● ", text)
     if text.startswith("-> "):
         return ("✓ ", text[3:])
     if text.startswith("Warning:"):
         return ("! ", text)
     if text.startswith("Error:"):
         return ("✕ ", text)
-    return ("", text)
+    return ("● ", text)
 
 
 class NemotronTuiApp(Application):
@@ -146,8 +147,6 @@ class NemotronTuiApp(Application):
 
         root = HSplit(
             [
-                self._header_window,
-                self._input_window,
                 ConditionalContainer(
                     content=self._conversation_window,
                     filter=Condition(lambda: self._modal is None),
@@ -156,6 +155,7 @@ class NemotronTuiApp(Application):
                     content=self._modal_window,
                     filter=Condition(lambda: self._modal is not None),
                 ),
+                self._input_window,
                 self._status_window,
             ]
         )
@@ -243,13 +243,26 @@ class NemotronTuiApp(Application):
         theme = self.env.theme
         cfg = self.env.session.config
         policy = self.env.session.permissions.policy
-        mode = "read-only" if policy.read_only else "approvals"
-        lines = [
-            (theme.muted, "Nemotron  "),
-            ("#ffffff", f"│ model: {cfg.provider} / {cfg.model_id}"),
-            (theme.muted, f"  │ effort: {self.env.effort}  │ {mode}"),
+        mode = "read-only" if policy.read_only else "accept-edits"
+
+        try:
+            cols = self.output.size.columns
+        except Exception:
+            cols = 80
+
+        left_text = "? for shortcuts"
+        model_display = cfg.model_id
+        right_text = f"{mode}  ·  {model_display}  ·  {self.env.effort}"
+
+        gap = max(2, cols - len(left_text) - len(right_text))
+        line = [
+            (theme.muted, left_text),
+            ("", " " * gap),
+            (theme.muted, f"{mode}  ·  "),
+            ("#ffffff", model_display),
+            (theme.muted, f"  ·  {self.env.effort}"),
         ]
-        return [lines]
+        return [line]
 
     def _append_output(self, text: str) -> None:
         """Append agent/tool progress output (called from any thread)."""
@@ -288,16 +301,7 @@ class NemotronTuiApp(Application):
         )
 
     def _show_empty_state(self) -> None:
-        theme = self.env.theme
-        self._add_block(
-            "hint",
-            [
-                [(theme.ai_label, "What would you like to build?")],
-                [],
-                [(theme.muted, "Type your message above and press Enter to talk to Nemotron.")],
-                [(theme.muted, "Quick shortcuts:  /  Commands    @  Files    ?  Help")],
-            ],
-        )
+        pass
 
     # ------------------------------------------------------------------ #
     # Modals
@@ -495,6 +499,9 @@ class NemotronTuiApp(Application):
             asyncio.ensure_future(self._do_message(text))
 
     async def _do_message(self, text: str) -> None:
+        # Echo user prompt in conversation stream
+        accent = self.env.theme.user_prompt
+        self._add_block("user", [[(accent, "> "), ("#ffffff bold", text)]])
         self.busy = True
         self._input_buffer.read_only = to_filter(True)
         self._show_thinking()
@@ -542,13 +549,16 @@ class NemotronTuiApp(Application):
         theme = self.env.theme
         answer = (result.answer or "").strip()
         if answer:
-            self._add_block("label", [[(theme.ai_label, "Nemotron:")]])
             question_style = theme.ai_question if answer.endswith("?") else theme.ai_text
             document = render_markdown(answer, ai_text_style=question_style)
             self._add_block("ai", document)
         summary = (result.format_summary() or "").strip()
         if summary:
-            self._add_block("summary", [[(theme.muted, line)] for line in summary.split("\n")])
+            # Format concise summary like Antigravity stats
+            turn_stat = f"{result.turns_used} turns" if hasattr(result, "turns_used") else ""
+            tool_stat = f"{result.tool_calls_used} tools" if hasattr(result, "tool_calls_used") else ""
+            stat_line = f"● {result.status.upper()} ({', '.join(filter(None, [turn_stat, tool_stat]))})"
+            self._add_block("summary", [[(theme.ok if result.status == 'completed' else theme.warn, stat_line)]])
 
     # ------------------------------------------------------------------ #
     # Key bindings
