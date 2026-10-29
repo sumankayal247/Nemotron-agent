@@ -368,17 +368,17 @@ class NemotronTuiApp(Application):
             else:
                 self._add_block("tool", [[(style, icon), (style, rest)]])
 
-    def _show_thinking(self) -> None:
+    def _show_thinking(self, message: str = "⟳ Nemotron is thinking…") -> None:
         self._thinking = True
-        self._add_block("tool", [[(self.theme.muted, "⟳ Nemotron is thinking…")]])
+        self._add_block("tool", [[(self.theme.muted, message)]])
         self._safe_invalidate()
 
     def _hide_thinking(self) -> None:
         self._thinking = False
-        if self._blocks and self._blocks[-1][0] == "tool":
-            last = self._blocks[-1][1]
-            if last and last[0] and last[0][0][1] == "⟳ Nemotron is thinking…":
-                self._blocks.pop()
+        self._blocks = [
+            b for b in self._blocks
+            if not (b[0] == "tool" and b[1] and b[1][0] and b[1][0][0][1].startswith("⟳ "))
+        ]
         self._safe_invalidate()
 
     def _show_error(self, text: str) -> None:
@@ -618,8 +618,13 @@ class NemotronTuiApp(Application):
             self._render_result(result)
 
     async def _do_dispatch(self, line: str) -> None:
+        # Echo command in conversation stream
+        accent = self.env.theme.user_prompt
+        self._add_block("user", [[(accent, "> "), ("#ffffff bold", line)]])
         self.busy = True
         self._input_buffer.read_only = to_filter(True)
+        loader_text = "⟳ Checking for updates…" if line.startswith("/update") else "⟳ Running command…"
+        self._show_thinking(loader_text)
         self.invalidate()
         exit_requested = False
         try:
@@ -633,6 +638,7 @@ class NemotronTuiApp(Application):
         finally:
             self.busy = False
             self._input_buffer.read_only = to_filter(False)
+            self._hide_thinking()
             self.invalidate()
         if exit_requested:
             try:
