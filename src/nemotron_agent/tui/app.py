@@ -19,11 +19,12 @@ from typing import Callable, TypeAlias
 
 from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.filters import Condition
+from prompt_toolkit.filters import Condition, to_filter
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout.containers import HSplit, Window, ConditionalContainer
 from prompt_toolkit.document import Document
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.processors import BeforeInput, ConditionalProcessor, AfterInput
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.styles import Style
 
@@ -52,6 +53,22 @@ _OVERHEAD_LINES = 11
 
 def _pane_height(rows: int) -> int:
     return max(5, rows - _OVERHEAD_LINES)
+
+
+def _flatten_block(lines: list) -> list[tuple[str, str]]:
+    """Flatten a list of lines (where each line is a list of (style, text) tuples)
+
+    into a prompt_toolkit FormattedText fragment list with newline separators.
+    """
+    flat: list[tuple[str, str]] = []
+    for i, line in enumerate(lines):
+        if i > 0:
+            flat.append(("", "\n"))
+        if isinstance(line, list):
+            flat.extend(line)
+        elif isinstance(line, tuple):
+            flat.append(line)
+    return flat
 
 
 def _icon_for_output(text: str) -> tuple[str, str]:
@@ -90,31 +107,47 @@ class NemotronTuiApp(Application):
         # Controls
         # ------------------------------------------------------------------
         self._input_buffer = Buffer()
-        self._input_control = BufferControl(buffer=self._input_buffer)
+
+        def _get_input_prompt():
+            if self._modal is not None:
+                return []
+            return [(f"bold {self.env.theme.user_prompt}", "> ")]
+
+        self._input_control = BufferControl(
+            buffer=self._input_buffer,
+            input_processors=[
+                BeforeInput(_get_input_prompt),
+                ConditionalProcessor(
+                    AfterInput("Type your message...", style=self.env.theme.muted),
+                    filter=Condition(lambda: self._modal is None and not self._input_buffer.text),
+                ),
+            ],
+        )
 
         self._input_window = Window(
-            BufferControl(buffer=self._input_buffer), height=1, style=self.theme.border
+            self._input_control, height=1, style=self.theme.border
         )
         self._header_window = Window(
-            FormattedTextControl(text=self._render_header),
+            FormattedTextControl(text=lambda: _flatten_block(self._render_header())),
             height=9,
             style=self.theme.border,
         )
         self._conversation_window = Window(
-            FormattedTextControl(text=self._render_conversation),
+            FormattedTextControl(text=lambda: _flatten_block(self._render_conversation())),
             style=self.theme.border,
         )
         self._modal_window = Window(
-            FormattedTextControl(text=self._render_modal),
+            FormattedTextControl(text=lambda: _flatten_block(self._render_modal())),
             style=self.theme.border,
         )
         self._status_window = Window(
-            FormattedTextControl(text=self._render_status), height=1
+            FormattedTextControl(text=lambda: _flatten_block(self._render_status())), height=1
         )
 
         root = HSplit(
             [
                 self._header_window,
+                self._input_window,
                 ConditionalContainer(
                     content=self._conversation_window,
                     filter=Condition(lambda: self._modal is None),
@@ -123,7 +156,6 @@ class NemotronTuiApp(Application):
                     content=self._modal_window,
                     filter=Condition(lambda: self._modal is not None),
                 ),
-                self._input_window,
                 self._status_window,
             ]
         )
@@ -143,12 +175,10 @@ class NemotronTuiApp(Application):
     # ------------------------------------------------------------------ #
     # Application life cycle
     # ------------------------------------------------------------------ #
-    async def run_async(self, aborted=None, render_as_coroutine=False):
+    async def run_async(self, *args, **kwargs):
         self._main_loop = asyncio.get_running_loop()
         self._show_empty_state()
-        return await super().run_async(
-            aborted=aborted, render_as_coroutine=render_as_coroutine
-        )
+        return await super().run_async(*args, **kwargs)
 
     def _main_loop_or_none(self):
         return getattr(self, "_main_loop", None)
@@ -259,15 +289,13 @@ class NemotronTuiApp(Application):
 
     def _show_empty_state(self) -> None:
         theme = self.env.theme
-        accent = theme.user_prompt
         self._add_block(
             "hint",
             [
                 [(theme.ai_label, "What would you like to build?")],
                 [],
-                [(accent, "> "), (theme.muted, "Type your message...")],
-                [],
-                [(theme.muted, "/  Commands   @  Files   ?  Help")],
+                [(theme.muted, "Type your message above and press Enter to talk to Nemotron.")],
+                [(theme.muted, "Quick shortcuts:  /  Commands    @  Files    ?  Help")],
             ],
         )
 
@@ -277,12 +305,13 @@ class NemotronTuiApp(Application):
     def _open_modal(self, modal, focus_control=None) -> None:
         self._modal = modal
         self._modal_scroll = 0
-        self._focus(focus_control or self._input_control)
+        if focus_control is not None and hasattr(focus_control, "buffer"):
+            self._input_control.buffer = focus_control.buffer
         self.invalidate()
 
     def _close_modal(self) -> None:
         self._modal = None
-        self._focus(self._input_control)
+        self._input_control.buffer = self._input_buffer
         self.invalidate()
 
     def _focus(self, control) -> None:
@@ -467,7 +496,7 @@ class NemotronTuiApp(Application):
 
     async def _do_message(self, text: str) -> None:
         self.busy = True
-        self._input_buffer.read_only = True
+        self._input_buffer.read_only = to_filter(True)
         self._show_thinking()
         self.invalidate()
         result = None
@@ -479,7 +508,7 @@ class NemotronTuiApp(Application):
             self._show_error(f"Unexpected error: {exc}")
         finally:
             self.busy = False
-            self._input_buffer.read_only = False
+            self._input_buffer.read_only = to_filter(False)
             self._hide_thinking()
             self.invalidate()
         if result is not None:
@@ -487,7 +516,7 @@ class NemotronTuiApp(Application):
 
     async def _do_dispatch(self, line: str) -> None:
         self.busy = True
-        self._input_buffer.read_only = True
+        self._input_buffer.read_only = to_filter(True)
         self.invalidate()
         exit_requested = False
         try:
@@ -500,7 +529,7 @@ class NemotronTuiApp(Application):
             self._show_error(f"Unexpected error: {exc}")
         finally:
             self.busy = False
-            self._input_buffer.read_only = False
+            self._input_buffer.read_only = to_filter(False)
             self.invalidate()
         if exit_requested:
             try:

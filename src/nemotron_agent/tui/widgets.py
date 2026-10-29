@@ -206,9 +206,6 @@ class PaletteModal:
             [("#9ca3af", "Type to filter   ↑↓ Navigate   Enter Select   Esc Cancel")],
             [],
         ]
-        prefix = "/" if not self.filter_text.startswith("/") else self.filter_text
-        lines.append([("#ffffff", "  " + prefix), ("#a5f3fc", self.filter_text[len(prefix):])])
-        lines.append([])
         for index, (name, desc) in enumerate(self.matches):
             if index == self.selected_index:
                 lines.append(_selected_line("#111827 #ffffff", f"/{name}"))
@@ -369,10 +366,9 @@ class FilePickerModal:
             [("#9ca3af", "↑↓ Navigate   Enter Select/Open   Type to filter   Tab Complete   Esc Cancel")],
             [],
         ]
-        lines.append([("#ffffff", "  @"), ("#a5f3fc", self.filter_text[1:])])
         if self.message:
             lines.append([("#ef4444", "  " + self.message)])
-        lines.append([])
+            lines.append([])
         rel_cwd = self.cwd
         try:
             from pathlib import Path

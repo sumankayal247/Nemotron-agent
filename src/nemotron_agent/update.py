@@ -102,6 +102,15 @@ class UpdateManager:
             if self._git_root(root) is not None:
                 return InstallMethod.GIT
 
+        location = ""
+        if dist is not None:
+            location = str(getattr(dist, "_path", "") or "")
+        elif root is not None:
+            location = str(root)
+
+        if "pipx/venvs" in location or "pipx" in sys.prefix:
+            return InstallMethod.PIPX
+
         if shutil.which("pipx"):
             try:
                 proc = subprocess.run(
@@ -110,16 +119,13 @@ class UpdateManager:
                     text=True,
                     timeout=self.subprocess_timeout,
                 )
-                if self.package_name in proc.stdout:
+                if self.package_name in proc.stdout and (
+                    dist is not None and "pipx" in str(getattr(dist, "_path", ""))
+                ):
                     return InstallMethod.PIPX
             except Exception:
                 pass
 
-        location = ""
-        if dist is not None:
-            location = str(getattr(dist, "_path", "") or "")
-        elif root is not None:
-            location = str(root)
         if "site-packages" in location or "dist-packages" in location:
             return InstallMethod.PIP
         return InstallMethod.UNKNOWN
