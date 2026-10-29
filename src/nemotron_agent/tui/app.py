@@ -26,6 +26,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.processors import BeforeInput, ConditionalProcessor, AfterInput
 from prompt_toolkit.layout.layout import Layout
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.styles import Style
 
 from nemotron_agent.logging_utils import AgentError, safe_terminal_text
@@ -55,19 +56,30 @@ def _pane_height(rows: int) -> int:
     return max(5, rows - _OVERHEAD_LINES)
 
 
-def _flatten_block(lines: list) -> list[tuple[str, str]]:
+def _flatten_block(lines: list, mouse_handler: Callable[[MouseEvent], object] | None = None) -> list[tuple]:
     """Flatten a list of lines (where each line is a list of (style, text) tuples)
 
-    into a prompt_toolkit FormattedText fragment list with newline separators.
+    into a prompt_toolkit FormattedText fragment list with newline separators,
+    optionally attaching a mouse_handler to each segment.
     """
-    flat: list[tuple[str, str]] = []
+    flat: list[tuple] = []
     for i, line in enumerate(lines):
         if i > 0:
-            flat.append(("", "\n"))
+            if mouse_handler is not None:
+                flat.append(("", "\n", mouse_handler))
+            else:
+                flat.append(("", "\n"))
         if isinstance(line, list):
-            flat.extend(line)
+            for seg in line:
+                if len(seg) == 2 and mouse_handler is not None:
+                    flat.append((seg[0], seg[1], mouse_handler))
+                else:
+                    flat.append(seg)
         elif isinstance(line, tuple):
-            flat.append(line)
+            if len(line) == 2 and mouse_handler is not None:
+                flat.append((line[0], line[1], mouse_handler))
+            else:
+                flat.append(line)
     return flat
 
 
@@ -101,7 +113,7 @@ class NemotronTuiApp(Application):
         self.busy = False
 
         self._blocks: list[Block] = []
-        self._conv_scroll = 0
+        self._conv_scroll: int | None = None
         self._thinking = False
 
         # ------------------------------------------------------------------
@@ -134,7 +146,9 @@ class NemotronTuiApp(Application):
             style=self.theme.border,
         )
         self._conversation_window = Window(
-            FormattedTextControl(text=lambda: _flatten_block(self._render_conversation())),
+            FormattedTextControl(
+                text=lambda: self._render_conversation_fragments()
+            ),
             style=self.theme.border,
         )
         self._modal_window = Window(
@@ -183,6 +197,20 @@ class NemotronTuiApp(Application):
     def _main_loop_or_none(self):
         return getattr(self, "_main_loop", None)
 
+    def _safe_invalidate(self) -> None:
+        """Trigger a UI redraw safely from the main thread or worker threads."""
+        loop = self._main_loop_or_none()
+        if loop is not None and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(self.invalidate)
+            except RuntimeError:
+                pass
+        else:
+            try:
+                self.invalidate()
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------ #
     # Transcript rendering
     # ------------------------------------------------------------------ #
@@ -191,12 +219,8 @@ class NemotronTuiApp(Application):
         self._conv_scroll_to_bottom()
 
     def _conv_scroll_to_bottom(self) -> None:
-        try:
-            rows = self.output.size.rows
-        except Exception:
-            rows = 24
-        limit = max(0, len(self._blocks) - _pane_height(rows))
-        self._conv_scroll = max(self._conv_scroll, limit)
+        self._conv_scroll = None
+        self._safe_invalidate()
 
     def _conv_scroll_delta(self, delta: int) -> None:
         try:
@@ -204,18 +228,62 @@ class NemotronTuiApp(Application):
         except Exception:
             rows = 24
         pane = _pane_height(rows)
-        total = len(self._blocks)
-        self._conv_scroll = max(0, min(max(0, total - pane), self._conv_scroll + delta))
+        all_lines = self._get_all_conversation_lines()
+        total = len(all_lines)
+        max_scroll = max(0, total - pane)
 
-    def _render_conversation(self) -> list[Block]:
+        current = max_scroll if self._conv_scroll is None else self._conv_scroll
+        new_scroll = current + delta
+        if new_scroll >= max_scroll:
+            self._conv_scroll = None
+        else:
+            self._conv_scroll = max(0, new_scroll)
+        self._safe_invalidate()
+
+    def _get_all_conversation_lines(self) -> Block:
         lines: Block = []
-        start = self._conv_scroll
-        for _kind, block in self._blocks[start:]:
+        for _kind, block in self._blocks:
             lines.extend(block)
             lines.append([])  # gap between blocks
         if lines:
             lines.pop()
         return lines
+
+    def _on_conversation_mouse(self, mouse_event: MouseEvent) -> object:
+        if mouse_event.event_type == MouseEventType.SCROLL_UP:
+            self._conv_scroll_delta(-3)
+            return None
+        elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+            self._conv_scroll_delta(3)
+            return None
+        return NotImplemented
+
+    def _render_conversation_fragments(self) -> list[tuple]:
+        try:
+            rows = self.output.size.rows
+        except Exception:
+            rows = 24
+        pane = _pane_height(rows)
+        all_lines = self._get_all_conversation_lines()
+        total = len(all_lines)
+        max_scroll = max(0, total - pane)
+
+        if self._conv_scroll is None:
+            start = max_scroll
+        else:
+            start = max(0, min(max_scroll, self._conv_scroll))
+
+        visible_lines = all_lines[start : start + pane]
+        # Pad with empty lines if fewer than pane height to fill conversation area
+        if len(visible_lines) < pane:
+            visible_lines = list(visible_lines)
+            while len(visible_lines) < pane:
+                visible_lines.append([("", " ")])
+
+        return _flatten_block(visible_lines, mouse_handler=self._on_conversation_mouse)
+
+    def _render_conversation(self) -> list[Block]:
+        return self._get_all_conversation_lines()
 
     def _render_header(self) -> Block:
         theme = self.env.theme
@@ -283,6 +351,7 @@ class NemotronTuiApp(Application):
     def _show_thinking(self) -> None:
         self._thinking = True
         self._add_block("tool", [[(self.theme.muted, "⟳ Nemotron is thinking…")]])
+        self._safe_invalidate()
 
     def _hide_thinking(self) -> None:
         self._thinking = False
@@ -290,6 +359,7 @@ class NemotronTuiApp(Application):
             last = self._blocks[-1][1]
             if last and last[0] and last[0][0][1] == "⟳ Nemotron is thinking…":
                 self._blocks.pop()
+        self._safe_invalidate()
 
     def _show_error(self, text: str) -> None:
         self._add_block(
