@@ -43,14 +43,16 @@ nemotron-agent --help
 
 ## Selectable Model Presets & Provider Notes
 
-Out of the box, `nemotron-agent` provides four selectable NVIDIA Nemotron presets configured for **OpenRouter** (`https://openrouter.ai/api/v1`):
+Out of the box, `nemotron-agent` provides six free NVIDIA Nemotron presets configured for **OpenRouter** (`https://openrouter.ai/api/v1`):
 
 | # | Display Name | Model ID | Default Tool Mode |
 |---|--------------|----------|-------------------|
-| 1 | **Nemotron 3 Super** | `nvidia/nemotron-3-super-120b-a12b:free` | Native tool calling |
-| 2 | **Nemotron 3.5 Lightning** | `nvidia/nemotron-3.5-lightning:free` | Native tool calling |
-| 3 | **Nemotron 3.5 Super VL** | `nvidia/nemotron-3.5-super-vl:free` | Validated structured-prompt fallback (`<tool_call>`) |
-| 4 | **Nemotron 3 Ultra** | `nvidia/nemotron-3-ultra-550b-a55b:free` | Native tool calling |
+| 1 | **Nemotron 3.5 Lightning** | `nvidia/nemotron-3.5-lightning:free` | Native tool calling |
+| 2 | **Nemotron 3.5 Super VL** | `nvidia/nemotron-3.5-super-vl:free` | Validated structured-prompt fallback (`<tool_call>`) |
+| 3 | **Nemotron 3 Ultra** | `nvidia/nemotron-3-ultra-550b-a55b:free` | Native tool calling |
+| 4 | **Nemotron 3 Nano Omni Reasoning** | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | Native tool calling |
+| 5 | **Llama 3.1 Nemotron 70B** | `nvidia/llama-3.1-nemotron-70b-instruct:free` | Native tool calling |
+| 6 | **Llama 3.1 Nemotron Nano 8B** | `nvidia/llama-3.1-nemotron-nano-8b-v1:free` | Native tool calling |
 
 ### Important Provider & Availability Notice
 
@@ -73,7 +75,7 @@ Start with `/models` to see the choices, then select one (for example, `/models 
 
 During first-run setup:
 
-1. You choose one of the four Nemotron presets (or enter a custom provider, base URL, and model ID).
+1. You choose one of the six Nemotron presets (or enter a custom provider, base URL, and model ID).
 2. If no key is configured, open the displayed provider link. For the built-in OpenRouter presets, create and copy a key at **https://openrouter.ai/settings/keys**. The key belongs to the provider, so one OpenRouter key can be used for its supported models. For a custom provider, use that provider's own dashboard.
 3. Paste the key into the hidden prompt and press Enter. Nothing appears while you paste or type; that is normal. The key is sent in the `Authorization` header to the configured provider and is never echoed or stored in conversation history.
 4. Before saving, the CLI performs a lightweight connection test (`Reply with OK.`, `max_tokens=8`) **without sending any repository files**. If validation fails or is cancelled, you can retry with updated settings or exit cleanly.
@@ -159,7 +161,36 @@ Type `/` to display commands immediately, then use **Tab** to complete or cycle 
 | `/paste`, `/detach` | Attach the current clipboard image to the next prompt, or remove it before sending. Ctrl+V also attaches an image when the terminal passes it through. |
 | `/status`, `/context`, `/history`, `/copy`, `/retry`, `/stop`, `/version` | Inspect state, see recent turns, copy the last answer using terminal OSC 52 where supported, or retry safely. |
 | `/project [path]`, `/cd <path>`, `/provider`, `/key`, `/clear-key`, `/readonly [on\|off]` | Existing interactive project, provider, credential, and mode commands remain available. A startup `--read-only` lock cannot be disabled. |
+| `/color [orange|blue|neon_green]` | Choose the user prompt accent color (default: orange). Saved in user config and honored by the TUI theme. |
+| `/update [--check|--yes]` | Check for and install nemotron-agent updates. `--check` reports status only; `--yes` installs and auto-restarts. Never touches sessions, config, or credentials; refuses on a dirty git tree. |
 | `/exit`, `/quit` | Save the current resumable session and exit. Ctrl+D also exits. |
+
+
+### Full-Screen Terminal UI (TUI)
+
+On a real terminal, `nemotron-agent` (and `nemotron-agent chat`) launch a full-screen, keyboard-first TUI by default. Pass `--no-tui` to use the classic line-based REPL instead.
+
+The TUI runs in the alternate screen and fully restores your terminal on exit (`/exit`, `Ctrl+D`, or a crash). It keeps the existing agent, session, tool, and permission logic unchanged — only the rendering and interaction layer is new.
+
+| Pane | What it shows |
+|------|---------------|
+| **Header** | Original colorful 3D "N" Nemotron logo, repository path, active provider/model, and session state. |
+| **Conversation** | Streaming model answers with Markdown rendering (headings, lists, bold/italic, inline code, fenced code blocks with syntax highlighting, tables, blockquotes). Scrollable with `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End`. |
+| **Input** | Type a message, `/` to open the searchable command palette, `@` to open the interactive file picker, or `?` for help. |
+| **Status bar** | Active model, effort level (`low`/`medium`/`high`), and edit state (approvals / read-only). |
+
+**Keyboard navigation**
+- `↑`/`↓` — scroll conversation (or navigate a modal list)
+- `PageUp`/`PageDown`, `Home`/`End` — jump through the transcript
+- `/` — open the command palette; type to filter, `Enter` to pick, `Esc` to cancel
+- `@` — open the project file picker; type a path, `Enter` to select a file or descend into a directory
+- `?` — open the interactive help view
+- `Ctrl+C` — cancel a modal, interrupt a running operation, or confirm quit
+- `Ctrl+D` — exit immediately
+
+**Theme system** — colors are centralized, never hardcoded. The user prompt accent is selectable via `/color [orange|blue|neon_green]` (default: **orange**) or the `NEMOTRON_AGENT_PROMPT_COLOR` environment variable. AI responses render in **White**; AI questions render in **Bold White**. Accessibility is supported through text + icons + labels, not color alone.
+
+**Interaction modals** — selection, confirmation, text input, message, command palette, and file picker all use arrow keys, `Enter`, `Esc`, `Space`, and `Tab`. Tool activity shows icons/status indicators; streaming responses show a live activity indicator. Diff previews offer interactive **Accept / Reject / View full diff** approval.
 
 The agent executes a task synchronously. **Press Ctrl+C while a provider call or tool is running** to interrupt it and recover the conversation; a blocking operation may take time to return. `/stop` at the prompt reports that no operation is running. A cooperative stop request also prevents further tool steps after the current blocking step returns. `/retry` refuses to replay a request automatically after edits, command execution, interruption, or an image request whose image was discarded.
 
@@ -258,6 +289,22 @@ nemotron-agent auth clear
 nemotron-agent ping
 ```
 
+
+### Keeping nemotron-agent Up to Date (`/update`)
+
+`nemotron-agent update [--check|--yes]` checks PyPI for a newer release and can install it automatically.
+
+- `nemotron-agent update --check` — reports the installed version, the detected install method (git / pip / pipx / editable dev), and the latest PyPI version without installing anything.
+- `nemotron-agent update --yes` — installs the update and auto-restarts nemotron-agent so you're running the new version immediately.
+
+Safety guarantees:
+- **Never touches user data** — sessions, saved configuration, credentials, and project files are left intact.
+- **Dirty-repo protection** — if installed from a git checkout with uncommitted changes, the update is refused with a clear message. Commit or stash your changes, then re-run.
+- **Graceful failure** — if the network or installer fails, you get a clear error plus a manual recovery command (`pip install --upgrade nemotron-agent`).
+- **Editable/dev installs** are detected and guided to reinstall manually with `pip install -e .` rather than silently failing.
+
+The same flow is available interactively as `/update [--check|--yes]` inside the REPL/TUI.
+
 ### Running in Offline Mock Mode
 
 You can run the full CLI and repository tool workflow completely offline without API keys or network calls:
@@ -308,7 +355,9 @@ src/nemotron_agent/
 ├── agent.py           # Bounded tool loop, turn/call budgets & cancellation
 ├── providers/         # Provider abstraction, OpenAI-compatible and offline mock
 ├── repo/              # PathGuard, discovery, bounded search and context tracking
-└── tools/             # Schemas, validated registry, conflict-checked edits & argv runner
+├── tools/             # Schemas, validated registry, conflict-checked edits & argv runner
+├── tui/             # Full-screen terminal UI: theme, logo, markdown rendering, widgets, app shell
+└── update.py        # Self-update manager: install-method detection, PyPI check, dirty-repo protection, auto-restart
 ```
 
 ---
@@ -329,3 +378,4 @@ All unit and integration tests run completely offline using `MockProviderClient`
 - **Root `.gitignore` focus**: `.gitignore` parsing loads the repository root `.gitignore` plus built-in and user-configured `--exclude` / `--include` patterns; deeply nested per-subfolder `.gitignore` overrides are not recursively merged in v0.1.
 - **Text-first context**: Binary files and images are excluded from repository context even when selecting the `Nemotron 3.5 Super VL` preset; image attachment workflows are out of scope for v0.1.
 - **Provider endpoint variance**: On OpenRouter `:free` tiers, upstream availability, latency, and native tool-calling support vary over time; use `nemotron-agent config set-capability --tool-calling off` if an upstream endpoint rejects native `tools` parameters.
+- **TUI requires a real terminal**: the full-screen TUI is used only when stdin/stdout are TTYs; pipe or redirect output, pass `--no-tui`, or set a non-TTY environment (CI/tests) to fall back to the classic line-based REPL.

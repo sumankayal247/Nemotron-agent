@@ -47,6 +47,9 @@ from nemotron_agent.repl.storage import (
 from nemotron_agent.repo.context import ContextCheckpoint
 from nemotron_agent.repo.discovery import is_secret_like_path
 from nemotron_agent.setup_wizard import ClientFactory
+from nemotron_agent.tui.theme import theme_for
+
+import os
 
 InputFn = Callable[[str], str]
 OutputFn = Callable[[str], None]
@@ -147,6 +150,13 @@ class ReplEnvironment(
         self._pending_setup_selection: ResolvedConfig | None = None
         # A CLI --read-only lock is never relaxed by slash commands or resume.
         self._read_only_locked = session.permissions.policy.read_only
+        # User prompt accent color (orange default; blue / neon_green available).
+        # The NEMOTRON_AGENT_PROMPT_COLOR environment variable overrides saved config.
+        prompt_color = (
+            os.environ.get("NEMOTRON_AGENT_PROMPT_COLOR", "").strip().lower()
+            or self.user_config().prompt_color
+        )
+        self.theme = theme_for(prompt_color)
         # Route newly introduced UI output, tool progress and approval previews
         # through the existing redactor, including with injected test sinks.
         session.set_output_handler(self.output)

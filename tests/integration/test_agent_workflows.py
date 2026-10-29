@@ -234,7 +234,7 @@ def test_prompt_injection_and_unauthorized_calls_blocked_in_application_code(tmp
 def test_fallback_tool_calling_and_malformed_response_recovery(tmp_path: Path) -> None:
     repo = _create_temp_python_repo(tmp_path)
     cfg = ConfigManager(config_dir=tmp_path / "cfg", env={"NEMOTRON_AGENT_MOCK": "1"}).resolve(
-        cli_model="3"  # Nemotron 3.5 Super VL (supports_tool_calling=False)
+        cli_model="2"  # Nemotron 3.5 Super VL (supports_tool_calling=False)
     )
     assert cfg.capabilities.supports_tool_calling is False
 

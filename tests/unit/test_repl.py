@@ -567,7 +567,7 @@ def test_models_effort_and_read_only_locks_affect_real_requests(tmp_path):
         tmp_path, script=[CompletionResponse(content="ok")]
     )
     dispatch(env, "/models current")
-    dispatch(env, "/models use 2")
+    dispatch(env, "/models use 1")
     assert env.session.config.model_id.endswith("nemotron-3.5-lightning:free")
     dispatch(env, "/efforts low")
     assert env.task_limits() == (3, 4)
@@ -731,7 +731,7 @@ def test_config_auth_setup_and_ping_use_existing_implementations(tmp_path):
     env, _, out, keyring = make_environment(tmp_path, input_fn=lambda _: next(answers))
     dispatch(env, "/config show")
     dispatch(env, "/config presets")
-    dispatch(env, "/config set-model 2 --skip-check")
+    dispatch(env, "/config set-model 1 --skip-check")
     assert env.session.config.model_id.endswith("lightning:free")
     dispatch(env, "/ping")
     dispatch(env, "/auth set-key --provider openrouter --skip-check")
@@ -1137,7 +1137,7 @@ def test_first_model_choice_opens_setup_for_that_model_and_key_link(tmp_path):
     env.secret_input_fn = lambda prompt: (
         prompts.append(prompt) or "sk-or-v1-choosemodel123456"
     )
-    dispatch(env, "/models use 3")
+    dispatch(env, "/models use 2")
     assert not env._needs_setup
     assert env.session.config.model_id.endswith("nemotron-3.5-super-vl:free")
     assert env.session.config.capabilities.supports_vision
@@ -1393,7 +1393,7 @@ def test_clipboard_image_requires_vision_is_sent_and_never_saved(tmp_path):
     with pytest.raises(AgentError, match="vision-capable"):
         env.execute_prompt("What is shown?")
     assert env.pending_image is image and not provider.requests
-    dispatch(env, "/models use 3")
+    dispatch(env, "/models use 2")
     env.execute_prompt("What is shown?")
     sent = provider.requests[0].messages[-1]
     assert observed == [True]
@@ -1506,7 +1506,7 @@ def test_preselected_model_is_preserved_when_setup_is_retried(tmp_path):
     env.session.config.mock_mode = False
     env.secret_input_fn = lambda _: "sk-or-v1-retrytest123456789"
     env.client_factory = factory
-    dispatch(env, "/models 3")
+    dispatch(env, "/models 2")
     assert not env._client_available
     assert env._pending_setup_selection is not None
     env._ensure_client()
@@ -1544,7 +1544,7 @@ def test_first_preset_for_a_new_provider_prompts_for_its_key(tmp_path):
         prompts.append(prompt) or "sk-or-v1-switchkey123456789"
     )
     env.client_factory = lambda *_: MockProviderClient()
-    dispatch(env, "/models 3")
+    dispatch(env, "/models 2")
     assert env.session.config.provider == "openrouter"
     assert env.session.config.model_id == "nvidia/nemotron-3.5-super-vl:free"
     assert any("https://openrouter.ai/settings/keys" in line for line in output)
@@ -1601,10 +1601,27 @@ def test_deleting_global_instructions_during_approval_is_a_conflict(tmp_path):
     assert "changed while awaiting approval" in "\n".join(output)
 
 
+def test_update_slash_command_reports_status(tmp_path):
+    env, _, output, _ = make_environment(tmp_path)
+    dispatch(env, "/update")
+    joined = "\n".join(output)
+    assert "nemotron-agent" in joined
+    assert "Install method:" in joined
+
+    dispatch(env, "/update --check")
+    joined = "\n".join(output)
+    assert "Install method:" in joined
+
+    # No update should be available (or unreachable); --yes must not crash.
+    dispatch(env, "/update --yes")
+    joined = "\n".join(output)
+    assert "Nothing to update" in joined or "unable to reach PyPI" in joined
+
+
 def test_model_list_uses_saved_vision_capability_override(tmp_path):
     env, _, output, _ = make_environment(tmp_path)
-    model = "nvidia/nemotron-3-super-120b-a12b:free"
+    model = "nvidia/nemotron-3.5-lightning:free"
     dispatch(env, f"/config set-capability --for-model {model} --vision on")
     dispatch(env, "/models")
-    lines = [line for line in output if "Nemotron 3 Super —" in line]
+    lines = [line for line in output if "Nemotron 3.5 Lightning —" in line]
     assert lines and "image input" in lines[-1]

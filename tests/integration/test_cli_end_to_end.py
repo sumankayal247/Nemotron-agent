@@ -72,7 +72,7 @@ def test_cli_interactive_repl_slash_commands(tmp_path: Path) -> None:
             "/clear",
             "/context",
             "/readonly on",
-            "/model 2",
+            "/model 1",
             "/exit",
         ]
     )
@@ -92,6 +92,21 @@ def test_cli_interactive_repl_slash_commands(tmp_path: Path) -> None:
     assert "Strict read-only mode enabled" in rendered
     assert "Switched active model to 'nvidia/nemotron-3.5-lightning:free'." in rendered
     assert "Goodbye." in rendered
+
+
+def test_cli_update_check_reports_current_version(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    out: list[str] = []
+    rc = run_cli(
+        ["--mock", "--repo", str(repo), "update", "--check"],
+        config_dir=tmp_path / "user_cfg",
+        env={},
+        output_fn=out.append,
+    )
+    assert rc == 0
+    rendered = "\n".join(out)
+    assert "nemotron-agent" in rendered
+    assert "Install method:" in rendered
 
 
 def test_cli_non_interactive_without_credentials_fails_clearly(tmp_path: Path) -> None:
