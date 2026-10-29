@@ -15,10 +15,31 @@ It runs locally on your machine against **any local project directory** (plain f
 
 Requires **Python 3.11+** on macOS, Linux, or Windows.
 
+### Prerequisites & Dependencies
+
+Before installation, make sure you have:
+- **Python 3.11+** (with `pip` and `python3-venv`)
+- **pipx** (recommended for global CLI use: `sudo apt install pipx` or `brew install pipx`, followed by `pipx ensurepath`)
+
+The core dependencies packaged and installed automatically with `nemotron-agent`:
+- `httpx>=0.27.0` (async HTTP client for provider communication)
+- `pydantic>=2.6.0` (data validation & configuration schemas)
+- `keyring>=24.0.0` (secure OS credential storage)
+- `prompt_toolkit>=3.0.43,<4` (interactive full-screen TUI and terminal event loop)
+- `Pillow>=10.4,<13` (image handling for multimodal models)
+- `pygments>=2.15` (syntax highlighting for codeblocks in TUI)
+- `pytest>=8.0.0` (optional, for testing in dev mode)
+
+---
+
 ### Option A: Install globally for your user with `pipx` (recommended for daily use across any local folder)
 
 ```bash
+# Fresh install:
 pipx install .
+
+# Or if updating / reinstalling an existing version, use --force:
+pipx install --force .
 ```
 
 After this, you can `cd` into **any folder on your computer** (or pass `--path /path/to/your/codebase`) and run `NA` or `nemotron-agent`. Both executable names launch the same interactive environment; `nemotron-agent` remains available on platforms where an uppercase executable name is inconvenient.
@@ -28,6 +49,7 @@ After this, you can `cd` into **any folder on your computer** (or pass `--path /
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate   # Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install --upgrade pip
 pip install -e ".[dev]"
 ```
 
