@@ -214,6 +214,7 @@ class ConfigurationCommands:
             )
             return
 
+        self.output(f"Applying update to {info.latest} ({info.method.value})...")
         result = mgr.apply_update(check_only=False, yes=True, restart_on_success=True)
         if not result.ok and "Refusing to update: uncommitted changes" in result.message:
             # Keep consistent output for uncommitted git changes

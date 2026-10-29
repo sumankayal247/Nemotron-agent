@@ -116,6 +116,10 @@ class NemotronTuiApp(Application):
         self._conv_scroll: int | None = None
         self._thinking = False
 
+        self._history: list[str] = []
+        self._history_index: int | None = None
+        self._saved_input: str = ""
+
         # ------------------------------------------------------------------
         # Controls
         # ------------------------------------------------------------------
@@ -255,10 +259,10 @@ class NemotronTuiApp(Application):
 
     def _on_conversation_mouse(self, mouse_event: MouseEvent) -> object:
         if mouse_event.event_type == MouseEventType.SCROLL_UP:
-            self._conv_scroll_delta(-3)
+            self._conv_scroll_delta(-5)
             return None
         elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-            self._conv_scroll_delta(3)
+            self._conv_scroll_delta(5)
             return None
         return NotImplemented
 
@@ -556,8 +560,12 @@ class NemotronTuiApp(Application):
             return
         text = (self._input_buffer.text or "").strip()
         self._input_buffer.text = ""
+        self._history_index = None
+        self._saved_input = ""
         if not text:
             return
+        if not self._history or self._history[-1] != text:
+            self._history.append(text)
         if text == "/":
             self._open_palette()
             return
@@ -691,34 +699,70 @@ class NemotronTuiApp(Application):
             # simply inserts a newline via the terminal's default binding.
             pass
 
-        def _scroll(delta: int) -> None:
+        def _modal_up_down(delta: int) -> None:
             if app._modal is not None:
                 modal = app._modal
-                if isinstance(modal, (PaletteModal, SelectionModal, FilePickerModal)):
+                if hasattr(modal, "on_up") and hasattr(modal, "on_down"):
                     if delta < 0:
                         modal.on_up()
                     else:
                         modal.on_down()
                 app.invalidate()
+
+        def _history_navigate(delta: int) -> None:
+            if not app._history:
+                return
+            if delta < 0:
+                # Up: older prompts
+                if app._history_index is None:
+                    app._saved_input = app._input_buffer.text
+                    app._history_index = len(app._history) - 1
+                elif app._history_index > 0:
+                    app._history_index -= 1
+                app._input_buffer.text = app._history[app._history_index]
+                app._input_buffer.cursor_position = len(app._input_buffer.text)
             else:
-                app._conv_scroll_delta(delta)
-                app.invalidate()
+                # Down: newer prompts
+                if app._history_index is None:
+                    return
+                elif app._history_index < len(app._history) - 1:
+                    app._history_index += 1
+                    app._input_buffer.text = app._history[app._history_index]
+                else:
+                    app._history_index = None
+                    app._input_buffer.text = app._saved_input
+                app._input_buffer.cursor_position = len(app._input_buffer.text)
+            app.invalidate()
 
         @bindings.add("up")
         def _(event) -> None:
-            _scroll(-1)
+            if app._modal is not None:
+                _modal_up_down(-1)
+            else:
+                _history_navigate(-1)
 
         @bindings.add("down")
         def _(event) -> None:
-            _scroll(1)
+            if app._modal is not None:
+                _modal_up_down(1)
+            else:
+                _history_navigate(1)
 
         @bindings.add("pageup")
         def _(event) -> None:
-            _scroll(-_pane_height(app.output.size.rows))
+            if app._modal is not None:
+                _modal_up_down(-1)
+            else:
+                app._conv_scroll_delta(-_pane_height(app.output.size.rows))
+                app.invalidate()
 
         @bindings.add("pagedown")
         def _(event) -> None:
-            _scroll(_pane_height(app.output.size.rows))
+            if app._modal is not None:
+                _modal_up_down(1)
+            else:
+                app._conv_scroll_delta(_pane_height(app.output.size.rows))
+                app.invalidate()
 
         @bindings.add("home")
         def _(event) -> None:
