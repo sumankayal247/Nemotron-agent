@@ -305,14 +305,16 @@ class NemotronTuiApp(Application):
         cfg = self.env.session.config
         lines: Block = list(art)
         lines.append([])
-        lines.append([("#ffffff bold", "NEMOTRON"), (theme.muted, "   AI Coding Agent")])
+        lines.append([("#ffffff bold", "  NEMOTRON"), (theme.muted, "   AI Coding Agent")])
+        lines.append([(accent, "  What would you like to build today?")])
         lines.append([])
-        lines.append([(theme.muted, "  Repository: "), ("#ffffff", str(self.env.session.project_root))])
-        lines.append([(theme.muted, "  Model: "), ("#ffffff", f"{cfg.provider} / {cfg.model_id}")])
+        lines.append([(theme.muted, "  Repository : "), ("#ffffff", str(self.env.session.project_root))])
+        lines.append([(theme.muted, "  Model      : "), ("#ffffff", f"{cfg.provider} / {cfg.model_id}")])
         session_state = "Resumed" if getattr(self.env, "resume_recap", "") else "New session"
-        lines.append([(theme.muted, "  Session: "), (theme.ok, session_state)])
+        lines.append([(theme.muted, "  Session    : "), (theme.ok, session_state)])
         lines.append([])
-        lines.append([(theme.muted, "  / commands   @ files   ? help   ↑↓ scroll")])
+        lines.append([(theme.muted, "  / commands   @ files   ? help   ↑↓ history/scroll")])
+        lines.append([])
         return lines
 
     def _render_status(self) -> Block:
@@ -345,16 +347,26 @@ class NemotronTuiApp(Application):
         text = safe_terminal_text(text or "")
         if not text:
             return
-        icon, rest = _icon_for_output(text)
-        if icon == "✓ ":
-            style = self.theme.ok
-        elif icon == "! ":
-            style = self.theme.warn
-        elif icon == "✕ " or rest.startswith("Error:"):
-            style = self.theme.error
-        else:
-            style = self.theme.muted
-        self._add_block("tool", [[(style, icon), (style, rest)]])
+        # If text contains multiple lines, split them so they render neatly
+        sublines = text.splitlines()
+        for idx, subline in enumerate(sublines):
+            subline = subline.strip()
+            if not subline:
+                continue
+            icon, rest = _icon_for_output(subline)
+            if icon == "✓ ":
+                style = self.theme.ok
+            elif icon == "! ":
+                style = self.theme.warn
+            elif icon == "✕ " or rest.startswith("Error:"):
+                style = self.theme.error
+            else:
+                style = self.theme.muted
+            # For continuation lines within a block, indent slightly
+            if idx > 0 and icon == "● ":
+                self._add_block("tool", [[(style, "  "), (style, subline)]])
+            else:
+                self._add_block("tool", [[(style, icon), (style, rest)]])
 
     def _show_thinking(self) -> None:
         self._thinking = True
@@ -379,7 +391,9 @@ class NemotronTuiApp(Application):
         )
 
     def _show_empty_state(self) -> None:
-        pass
+        self._blocks = [("header", self._render_header())]
+        self._conv_scroll = None
+        self._safe_invalidate()
 
     # ------------------------------------------------------------------ #
     # Modals
