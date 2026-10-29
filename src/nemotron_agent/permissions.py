@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -48,6 +48,19 @@ class PermissionManager:
         self.audit_log: list[ApprovalAuditEntry] = []
         self._approved_secret_files: set[str] = set()
         self._approved_outside_paths: set[Path] = set()
+
+    def set_output_handler(self, output_fn: OutputFn) -> None:
+        """Replace the sink used for approval and security notices."""
+        self._output_fn = output_fn
+
+    @property
+    def has_approved_secret_reads(self) -> bool:
+        return bool(self._approved_secret_files)
+
+    def clear_scoped_approvals(self) -> None:
+        """Do not carry sensitive-file or outside-path approvals into another project."""
+        self._approved_secret_files.clear()
+        self._approved_outside_paths.clear()
 
     def check_outside_root(self, candidate: Path, project_root: Path, *, operation: str) -> None:
         """Reject paths outside `project_root` unless explicitly enabled and approved by user."""

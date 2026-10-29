@@ -74,6 +74,8 @@ def test_secret_redaction_covers_registered_and_heuristic_tokens() -> None:
     assert "nvapi-xyz987654321" not in scrubbed
     assert "plain_key_value_123" not in scrubbed
     assert REDACTED in scrubbed
+    url = redact_text("https://user:password@example.com/v1?token=secretvalue")
+    assert "user:password" not in url and "secretvalue" not in url
 
     nested = {
         "Authorization": "Bearer secret-token-value-111",

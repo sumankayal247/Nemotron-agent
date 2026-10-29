@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import os
 import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -154,9 +155,7 @@ class FileEditor:
                     f"This edit removes all remaining content from '{rel_path}', leaving it empty."
                 )
             elif not new_text.strip() and len(old_text.splitlines()) >= 10:
-                risk_warning = (
-                    f"This edit deletes {len(old_text.splitlines())} lines without replacement."
-                )
+                risk_warning = f"This edit deletes {len(old_text.splitlines())} lines without replacement."
 
         diff_text = generate_unified_diff(
             rel_path,
@@ -175,7 +174,32 @@ class FileEditor:
             risk_warning=risk_warning,
         )
         if not approved:
-            return f"User declined proposed edit to '{rel_path}'. File was NOT modified."
+            return (
+                f"User declined proposed edit to '{rel_path}'. File was NOT modified."
+            )
+
+        # The file or a parent symlink may change while the approval prompt is open.
+        final_path, final_rel = self.path_guard.resolve_path(path, operation="write")
+        if final_path != resolved_path or final_rel != rel_path:
+            raise ConflictError(
+                f"Path for '{rel_path}' changed while awaiting approval."
+            )
+        if create_if_missing:
+            if resolved_path.exists() or resolved_path.is_symlink():
+                raise ConflictError(
+                    f"'{rel_path}' appeared while awaiting approval; no file was changed."
+                )
+        else:
+            try:
+                final_sha = compute_sha256(resolved_path.read_bytes())
+            except OSError as exc:
+                raise ConflictError(
+                    f"Cannot recheck '{rel_path}' after approval: {exc}"
+                ) from exc
+            if final_sha != current_sha:
+                raise ConflictError(
+                    f"'{rel_path}' changed while awaiting approval; no file was changed."
+                )
 
         self._atomic_write_text(resolved_path, updated_text)
         new_sha = compute_sha256(updated_text.encode("utf-8"))
@@ -204,11 +228,18 @@ class FileEditor:
             except OSError:
                 existing_mode = None
 
-        tmp_path = target.parent / f".{target.name}.nemotron.tmp"
-        tmp_path.write_text(content, encoding="utf-8")
-        if existing_mode is not None:
-            try:
-                os.chmod(tmp_path, existing_mode)
-            except OSError:
-                pass
-        os.replace(tmp_path, target)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{target.name}.nemotron-", dir=target.parent
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                handle.write(content)
+            if existing_mode is not None:
+                try:
+                    os.chmod(tmp_name, existing_mode)
+                except OSError:
+                    pass
+            os.replace(tmp_name, target)
+        finally:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)

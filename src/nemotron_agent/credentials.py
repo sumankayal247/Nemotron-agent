@@ -111,6 +111,12 @@ class CredentialManager:
         self._project_root = project_root.resolve() if project_root else None
         self._session_keys: dict[str, str] = {}
 
+    def set_project_root(self, project_root: Path) -> None:
+        """Update the active repository used to guard credential storage."""
+        root = project_root.expanduser().resolve()
+        _ensure_not_inside_repo(self.config_dir, root)
+        self._project_root = root
+
     def keyring_status(self) -> KeyringStatus:
         ok, name, reason = self._keyring.backend_Description()
         return KeyringStatus(available=ok, backend_name=name, reason_unavailable=reason)

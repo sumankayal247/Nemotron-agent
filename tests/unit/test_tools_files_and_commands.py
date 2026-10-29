@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -245,3 +244,32 @@ def test_command_runner_enforces_timeout(tmp_path: Path) -> None:
             reason="Test timeout handling",
         )
     assert runner.runs[-1].timed_out is True
+
+
+def test_edit_rechecks_conflicts_after_approval_and_uses_safe_tempfiles(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    _, context, editor, _ = _build_stack(repo)
+    context.read_file_lines(path="app.py")
+
+    def modify_during_approval(_prompt: str) -> str:
+        target.write_text("value = 2  # user change\n", encoding="utf-8")
+        return "y"
+
+    editor.permissions._input_fn = modify_during_approval
+    with pytest.raises(ConflictError, match="while awaiting approval"):
+        editor.apply_edit(path="app.py", old_text="value = 1", new_text="value = 3")
+    assert target.read_text() == "value = 2  # user change\n"
+    assert not editor.changes
+
+    # A pre-existing predictable tempfile symlink must never be followed.
+    outside = tmp_path / "outside.txt"
+    outside.write_text("preserve", encoding="utf-8")
+    (repo / ".app.py.nemotron.tmp").symlink_to(outside)
+    editor.permissions._input_fn = lambda _: "y"
+    context.read_file_lines(path="app.py")
+    editor.apply_edit(path="app.py", old_text="value = 2", new_text="value = 4")
+    assert outside.read_text() == "preserve"
+    assert target.read_text() == "value = 4  # user change\n"

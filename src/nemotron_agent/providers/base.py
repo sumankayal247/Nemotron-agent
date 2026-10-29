@@ -14,7 +14,9 @@ from nemotron_agent.logging_utils import MalformedResponseError
 
 ChatRole = Literal["system", "user", "assistant", "tool"]
 
-_TOOL_CALL_TAG_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL | re.IGNORECASE)
+_TOOL_CALL_TAG_RE = re.compile(
+    r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL | re.IGNORECASE
+)
 
 
 class ToolCallRequest(BaseModel):
@@ -27,6 +29,22 @@ class ToolCallRequest(BaseModel):
     arguments_raw: str | dict[str, Any]
 
 
+MAX_IMAGE_BYTES = 5_000_000  # 5 MB, counting the original binary image bytes
+
+
+class ImageAttachment(BaseModel):
+    """In-memory image input; bytes are deliberately excluded from serialization."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mime_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif"]
+    data: bytes = Field(
+        min_length=1, max_length=MAX_IMAGE_BYTES, exclude=True, repr=False
+    )
+    width: int = Field(ge=1)
+    height: int = Field(ge=1)
+
+
 class ChatMessage(BaseModel):
     """Normalized conversation message across providers."""
 
@@ -34,6 +52,9 @@ class ChatMessage(BaseModel):
 
     role: ChatRole
     content: str = ""
+    images: list[ImageAttachment] = Field(
+        default_factory=list, max_length=1, exclude=True, repr=False
+    )
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     tool_call_id: str | None = None
     name: str | None = None

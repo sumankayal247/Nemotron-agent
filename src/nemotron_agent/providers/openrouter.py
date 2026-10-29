@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -20,6 +21,7 @@ from nemotron_agent.logging_utils import (
     register_secret,
 )
 from nemotron_agent.providers.base import (
+    MAX_IMAGE_BYTES,
     ChatMessage,
     CompletionRequest,
     CompletionResponse,
@@ -109,6 +111,15 @@ class OpenAICompatibleProviderClient(ProviderClient):
 
     def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Send a normalized chat completion request respecting model capability flags."""
+        images = [image for message in request.messages for image in message.images]
+        if images and not request.capabilities.supports_vision:
+            raise ModelCapabilityError(
+                "The selected model is not configured for image input. Choose a vision-capable model before sending an image."
+            )
+        if any(message.images and message.role != "user" for message in request.messages):
+            raise ModelCapabilityError("Images may only be attached to user messages.")
+        if sum(len(image.data) for image in images) > MAX_IMAGE_BYTES:
+            raise ModelCapabilityError("Image data exceeds the 5 MB limit for this request.")
         use_native_tools = bool(request.capabilities.supports_tool_calling and request.tools)
         messages_payload = self._serialize_messages(
             request.messages,
@@ -153,7 +164,17 @@ class OpenAICompatibleProviderClient(ProviderClient):
                     injected_fallback = True
                 serialized.append({"role": "system", "content": content})
             elif msg.role == "user":
-                serialized.append({"role": "user", "content": msg.content})
+                if msg.images:
+                    image_parts: list[dict[str, Any]] = [{"type": "text", "text": msg.content}]
+                    for image in msg.images:
+                        encoded = base64.b64encode(image.data).decode("ascii")
+                        image_parts.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{image.mime_type};base64,{encoded}"},
+                        })
+                    serialized.append({"role": "user", "content": image_parts})
+                else:
+                    serialized.append({"role": "user", "content": msg.content})
             elif msg.role == "assistant":
                 if use_native_tools and msg.tool_calls:
                     tc_list = []
@@ -185,17 +206,26 @@ class OpenAICompatibleProviderClient(ProviderClient):
                     if msg.content:
                         blocks.append(msg.content)
                     for tc in msg.tool_calls:
-                        args_obj = (
-                            json.loads(tc.arguments_raw)
-                            if isinstance(tc.arguments_raw, str)
-                            else tc.arguments_raw
-                        )
+                        if isinstance(tc.arguments_raw, str):
+                            try:
+                                args_obj = json.loads(tc.arguments_raw)
+                            except json.JSONDecodeError:
+                                # A previously rejected malformed call may still be
+                                # in history when a user switches tool modes. Do not
+                                # crash or execute it while serializing the transcript.
+                                args_obj = {
+                                    "_invalid_arguments": redact_text(tc.arguments_raw)
+                                }
+                        else:
+                            args_obj = tc.arguments_raw
                         blocks.append(
                             "<tool_call>\n"
                             + json.dumps({"name": tc.name, "arguments": args_obj})
                             + "\n</tool_call>"
                         )
-                    serialized.append({"role": "assistant", "content": "\n".join(blocks)})
+                    serialized.append(
+                        {"role": "assistant", "content": "\n".join(blocks)}
+                    )
                 else:
                     serialized.append({"role": "assistant", "content": msg.content})
             elif msg.role == "tool":
@@ -339,6 +369,8 @@ class OpenAICompatibleProviderClient(ProviderClient):
         model_id: str,
     ) -> ProviderError:
         clean_detail = redact_text(detail)
+        if len(clean_detail) > 2000:
+            clean_detail = clean_detail[:2000] + "… [truncated]"
         lower = clean_detail.lower()
 
         if status_code in (401, 403):
