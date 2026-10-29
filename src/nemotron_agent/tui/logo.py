@@ -38,13 +38,13 @@ def colored_logo(accent: str, dim: str) -> LogoArt:
     """Return the colored 3D ``N`` logo as styled lines."""
     # Front face (bright accent) and its extrusion (dimmed accent).
     return [
-        _front(accent, "  ██████╗      ╱██████╗"),
-        _depth(dim, " ██╔════╝     ╱██╔══██╗"),
-        _front(accent, " ██║    ██╗   ╱ ██║  ██║"),
-        _depth(dim, " ██║    ██║   █ ██████╔╝"),
-        _front(accent, " ╚██████╔╝   ╱  ██╔═══╝ "),
-        _depth(dim, "  ╚═════╝   ╱   ██║      "),
-        [("bold #ffffff", "          ╱      ╚═╝     ")],
+        [(f"bold {accent}", "  ████╗     ████╗"), (dim, " ╗")],
+        [(f"bold {accent}", "  █████╗    ████║"), (dim, " ║")],
+        [(f"bold {accent}", "  ██║╚██╗   ████║"), (dim, " ║")],
+        [(f"bold {accent}", "  ██║ ╚██╗  ████║"), (dim, " ║")],
+        [(f"bold {accent}", "  ██║  ╚██╗ ████║"), (dim, " ║")],
+        [(f"bold {accent}", "  ██║   ╚███████║"), (dim, " ║")],
+        [(f"bold {accent}", "  ╚═╝    ╚══════╝"), (dim, " ╝")],
     ]
 
 
