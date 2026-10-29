@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import getpass
+import sys
+import warnings
 from dataclasses import dataclass
 from typing import Callable
+from urllib.parse import parse_qsl, urlsplit
 
 from nemotron_agent.config import (
     DEFAULT_PROVIDERS,
@@ -21,6 +24,7 @@ from nemotron_agent.logging_utils import (
     FallbackConsentRequiredError,
     redact_text,
     register_secret,
+    safe_terminal_text,
 )
 from nemotron_agent.providers.base import ProviderClient
 from nemotron_agent.providers.mock import MockProviderClient
@@ -30,6 +34,78 @@ InputFn = Callable[[str], str]
 SecretInputFn = Callable[[str], str]
 OutputFn = Callable[[str], None]
 ClientFactory = Callable[[str, str, str, float, int], ProviderClient]
+
+
+def secure_secret_input(prompt: str) -> str:
+    """Refuse getpass's unmasked stdin fallback instead of echoing an API key."""
+    if not sys.stdin.isatty():
+        raise AgentError(
+            "Hidden key entry requires an interactive terminal. Set the documented API key "
+            "environment variable or run /setup in a terminal."
+        )
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            return getpass.getpass(prompt)
+    except getpass.GetPassWarning as exc:
+        raise AgentError(
+            "This terminal cannot hide key input. Use an environment variable instead."
+        ) from exc
+
+
+def approve_key_endpoint(
+    provider_name: str, base_url: str, *, input_fn: InputFn, output_fn: OutputFn
+) -> str | None:
+    """Show where a credential will go and require consent for risky destinations."""
+    try:
+        endpoint = urlsplit(base_url)
+        sensitive_query = any(
+            key.lower()
+            in {
+                "api_key",
+                "apikey",
+                "key",
+                "token",
+                "access_token",
+                "password",
+                "secret",
+            }
+            for key, _ in parse_qsl(endpoint.query, keep_blank_values=True)
+        )
+        valid = (
+            endpoint.scheme in {"https", "http"}
+            and endpoint.hostname
+            and not endpoint.username
+            and not endpoint.password
+            and not sensitive_query
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise AgentError(
+            "Invalid API endpoint. Use an HTTP(S) URL without credentials in the URL."
+        )
+    output_fn(f"API endpoint that receives your key: {redact_text(base_url)}")
+    if endpoint.scheme == "http":
+        output_fn(
+            "WARNING: HTTP is not encrypted; your API key and prompts could be intercepted."
+        )
+        if input_fn(
+            "Continue with this insecure endpoint? [y/N]: "
+        ).strip().lower() not in {"y", "yes"}:
+            return None
+    if (
+        provider_name == "openrouter"
+        and (endpoint.hostname or "").lower() != "openrouter.ai"
+    ):
+        output_fn(
+            "WARNING: This is not the official OpenRouter host. The OpenRouter key will be sent to this endpoint."
+        )
+        if input_fn(
+            "Send the OpenRouter key to this custom host? [y/N]: "
+        ).strip().lower() not in {"y", "yes"}:
+            return None
+    return endpoint.scheme
 
 
 def default_client_factory(
@@ -84,7 +160,7 @@ def ensure_ready_or_run_setup(
     interactive: bool = True,
     force_setup: bool = False,
     input_fn: InputFn = input,
-    secret_input_fn: SecretInputFn = getpass.getpass,
+    secret_input_fn: SecretInputFn = secure_secret_input,
     output_fn: OutputFn = print,
     client_factory: ClientFactory = default_client_factory,
 ) -> SetupOutcome:
@@ -116,7 +192,11 @@ def ensure_ready_or_run_setup(
             )
         if existing_cred is None:
             profile = get_provider_profile(resolved.provider)
-            env_hint = " / ".join(profile.env_key_names) if profile.env_key_names else "NEMOTRON_AGENT_API_KEY"
+            env_hint = (
+                " / ".join(profile.env_key_names)
+                if profile.env_key_names
+                else "NEMOTRON_AGENT_API_KEY"
+            )
             missing_parts.append(f"API key ({env_hint} or saved credentials)")
         return SetupOutcome(
             completed=False,
@@ -128,14 +208,38 @@ def ensure_ready_or_run_setup(
             ),
         )
 
-    return run_interactive_setup(
+    outcome = run_interactive_setup(
         config_manager=config_manager,
         credential_manager=credential_manager,
         input_fn=input_fn,
         secret_input_fn=secret_input_fn,
         output_fn=output_fn,
         client_factory=client_factory,
+        initial_selection=resolved
+        if has_env_model_or_saved and not force_setup
+        else None,
     )
+    if not outcome.completed or outcome.config is None:
+        return outcome
+    chosen = outcome.config
+    # Preserve CLI/env limits while applying the model explicitly chosen in setup.
+    effective = resolved.model_copy(
+        update={
+            "provider": chosen.provider,
+            "model_id": chosen.model_id,
+            "base_url": chosen.base_url,
+            "mock_mode": chosen.mock_mode,
+            "capabilities": chosen.capabilities,
+            "has_saved_config": True,
+            "sources": {
+                **resolved.sources,
+                "provider": "setup",
+                "model_id": "setup",
+                "base_url": "setup",
+            },
+        }
+    )
+    return SetupOutcome(True, effective, outcome.message)
 
 
 def run_interactive_setup(
@@ -143,30 +247,70 @@ def run_interactive_setup(
     credential_manager: CredentialManager,
     *,
     input_fn: InputFn = input,
-    secret_input_fn: SecretInputFn = getpass.getpass,
+    secret_input_fn: SecretInputFn = secure_secret_input,
     output_fn: OutputFn = print,
     client_factory: ClientFactory = default_client_factory,
+    initial_selection: ResolvedConfig | None = None,
 ) -> SetupOutcome:
-    """Run the interactive first-run setup flow with validation and retry/exit handling."""
+    """Run setup, optionally using a model the user already selected in the REPL."""
+    sink = output_fn
+
+    def safe_output(message: str) -> None:
+        sink(safe_terminal_text(redact_text(str(message))))
+
+    output_fn = safe_output
     user_cfg = config_manager.load_user_config() or UserConfig()
     presets = user_cfg.get_presets()
 
-    output_fn("=== Nemotron Agent First-Run Setup ===")
-    output_fn("")
-    output_fn(format_presets_table(presets))
-    output_fn("")
+    output_fn("=== Nemotron Agent First-Run Setup: Connect Your Model ===")
+    table_displayed = initial_selection is None
+    if table_displayed:
+        output_fn("")
+        output_fn(format_presets_table(presets))
+        output_fn("")
 
     try:
         while True:
-            # 1. Choose preset or custom model
-            selected_preset, provider_name, model_id, base_url = _prompt_model_and_provider(
-                user_cfg=user_cfg,
-                presets=presets,
-                input_fn=input_fn,
-                output_fn=output_fn,
-            )
+            # A /models selection is already explicit; do not ask the user to pick it twice.
+            if initial_selection is not None:
+                provider_name = initial_selection.provider
+                model_id = initial_selection.model_id
+                base_url = initial_selection.base_url
+                initial_selection = None
+                output_fn(f"Selected model: {model_id} (provider: {provider_name})")
+            else:
+                if not table_displayed:
+                    output_fn("")
+                    output_fn(
+                        "Available NVIDIA Nemotron presets on OpenRouter (:free):"
+                    )
+                    output_fn(format_presets_table(presets))
+                    table_displayed = True
+                _, provider_name, model_id, base_url = _prompt_model_and_provider(
+                    user_cfg=user_cfg,
+                    presets=presets,
+                    input_fn=input_fn,
+                    output_fn=output_fn,
+                )
 
             profile = get_provider_profile(provider_name)
+            endpoint_scheme = ""
+            if profile.requires_api_key:
+                try:
+                    endpoint_scheme = approve_key_endpoint(
+                        provider_name, base_url, input_fn=input_fn, output_fn=output_fn
+                    )
+                except AgentError as exc:
+                    output_fn(str(exc))
+                    if not _prompt_retry_or_exit(input_fn, output_fn):
+                        return SetupOutcome(
+                            False, None, "Setup cancelled: invalid API endpoint."
+                        )
+                    continue
+                if endpoint_scheme is None:
+                    return SetupOutcome(
+                        False, None, "Setup cancelled: API endpoint was not approved."
+                    )
 
             # 2. Resolve or prompt for API key
             api_key = ""
@@ -175,22 +319,45 @@ def run_interactive_setup(
                 existing = credential_manager.resolve_api_key(provider_name)
                 use_existing = False
                 if existing is not None:
-                    reuse_ans = input_fn(
-                        f"An API key for '{provider_name}' is already available via {existing.source}. "
-                        "Reuse it? [Y/n]: "
-                    ).strip().lower()
+                    reuse_ans = (
+                        input_fn(
+                            f"An API key for '{provider_name}' is already available via {existing.source}. "
+                            "Reuse it? [Y/n]: "
+                        )
+                        .strip()
+                        .lower()
+                    )
                     use_existing = reuse_ans in ("", "y", "yes")
                     if use_existing:
                         api_key = existing.api_key
 
                 if not use_existing:
                     output_fn("")
-                    output_fn(f"Provider: {profile.display_name} ({provider_name})")
-                    output_fn(f"Where your key is used: {profile.key_usage_explanation}")
-                    output_fn(f"How to obtain a key: {profile.key_obtain_instructions}")
+                    output_fn(f"Connect to {profile.display_name}")
+                    if profile.key_management_url:
+                        output_fn(
+                            f"  1. Open this page to create a key: {profile.key_management_url}"
+                        )
+                    else:
+                        output_fn(
+                            "  1. Open your provider's account dashboard and create an API key."
+                        )
+                    output_fn(
+                        "  2. Copy the key, then paste it at the hidden prompt below and press Enter."
+                    )
+                    output_fn(
+                        "     Nothing will appear while you paste or type; this is normal."
+                    )
+                    output_fn(f"  {profile.key_obtain_instructions}")
+                    if endpoint_scheme == "http":
+                        output_fn(
+                            "  Privacy: the key will be sent to the HTTP endpoint shown above without transport encryption."
+                        )
+                    else:
+                        output_fn(f"  Privacy: {profile.key_usage_explanation}")
                     output_fn("")
                     raw_key = secret_input_fn(
-                        f"Enter {profile.display_name} API key (input is hidden): "
+                        f"Paste {profile.display_name} API key (hidden), then press Enter: "
                     ).strip()
                     if not raw_key:
                         output_fn("Error: API key was empty.")
@@ -219,6 +386,8 @@ def run_interactive_setup(
             )
             try:
                 test_res = client.validate_connection(model_id)
+                if not test_res.ok:
+                    raise AgentError(test_res.message)
             except AgentError as exc:
                 output_fn(f"Connection test failed: {redact_text(str(exc))}")
                 output_fn(
@@ -234,7 +403,9 @@ def run_interactive_setup(
             finally:
                 client.close()
 
-            output_fn(f"Validation succeeded ({test_res.latency_ms} ms): {test_res.message}")
+            output_fn(
+                f"Validation succeeded ({test_res.latency_ms} ms): {test_res.message}"
+            )
 
             # 4. Save non-secret user configuration
             user_cfg.provider = provider_name
@@ -252,8 +423,31 @@ def run_interactive_setup(
                     input_fn=input_fn,
                     output_fn=output_fn,
                 )
+                # The key just validated must win over older environment values
+                # for this process, even when it was also stored in a keyring.
+                credential_manager.set_session_key(provider_name, api_key)
+                if existing and existing.source.startswith("env:"):
+                    output_fn(
+                        "The new key is active for this session. Update or unset the old environment key for future launches."
+                    )
 
             resolved = config_manager.resolve()
+            resolved = resolved.model_copy(
+                update={
+                    "provider": provider_name,
+                    "model_id": model_id,
+                    "base_url": base_url,
+                    "mock_mode": provider_name == "mock",
+                    "capabilities": user_cfg.capabilities_for(model_id),
+                    "sources": {
+                        **resolved.sources,
+                        "provider": "setup",
+                        "model_id": "setup",
+                        "base_url": "setup",
+                    },
+                    "has_saved_config": True,
+                }
+            )
             return SetupOutcome(
                 completed=True,
                 config=resolved,
@@ -284,9 +478,14 @@ def _prompt_model_and_provider(
             choice = "1"
 
         if choice.lower() == "custom":
-            prov = input_fn(
-                "Enter provider name [openrouter / openai_compatible] (default: openrouter): "
-            ).strip().lower() or "openrouter"
+            prov = (
+                input_fn(
+                    "Enter provider name [openrouter / openai_compatible] (default: openrouter): "
+                )
+                .strip()
+                .lower()
+                or "openrouter"
+            )
             profile = get_provider_profile(prov)
             if prov != "openrouter":
                 output_fn(
@@ -317,10 +516,14 @@ def _prompt_model_and_provider(
             continue
 
         prov = matched.provider
-        default_url = DEFAULT_PROVIDERS.get(prov, get_provider_profile(prov)).default_base_url
-        url_override = input_fn(
-            f"API base URL for {prov} [press Enter for {default_url}]: "
-        ).strip().rstrip("/")
+        default_url = DEFAULT_PROVIDERS.get(
+            prov, get_provider_profile(prov)
+        ).default_base_url
+        url_override = (
+            input_fn(f"API base URL for {prov} [press Enter for {default_url}]: ")
+            .strip()
+            .rstrip("/")
+        )
         base_url = url_override or default_url
         return matched, prov, matched.model_id, base_url
 
@@ -336,9 +539,13 @@ def _persist_or_hold_key(
     def _ask_fallback(explanation: str) -> bool:
         output_fn("")
         output_fn(explanation)
-        ans = input_fn(
-            "Allow saving API key to this restricted (0600) local credentials file? [y/N]: "
-        ).strip().lower()
+        ans = (
+            input_fn(
+                "Allow saving API key to this restricted (0600) local credentials file? [y/N]: "
+            )
+            .strip()
+            .lower()
+        )
         return ans in ("y", "yes")
 
     try:
@@ -357,7 +564,11 @@ def _persist_or_hold_key(
 
 
 def _prompt_retry_or_exit(input_fn: InputFn, output_fn: OutputFn) -> bool:
-    ans = input_fn("Would you like to retry setup with updated settings? [y/N]: ").strip().lower()
+    ans = (
+        input_fn("Would you like to retry setup with updated settings? [y/N]: ")
+        .strip()
+        .lower()
+    )
     if ans in ("y", "yes"):
         output_fn("")
         return True

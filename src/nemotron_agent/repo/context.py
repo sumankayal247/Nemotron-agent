@@ -6,7 +6,6 @@ import fnmatch
 import hashlib
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 from nemotron_agent.logging_utils import AgentError, PathViolationError
 from nemotron_agent.repo.discovery import PathGuard, RepositoryIndexer, is_binary_file
@@ -29,6 +28,15 @@ class ContextSpan:
 
     def label(self) -> str:
         return f"{self.path}:{self.start_line}-{self.end_line}"
+
+
+@dataclass(frozen=True)
+class ContextCheckpoint:
+    """In-memory retry state; never serialized into a saved session."""
+
+    spans: tuple[ContextSpan, ...]
+    hashes: dict[str, str]
+    chars_used: int
 
 
 class ContextTracker:
@@ -90,6 +98,28 @@ class ContextTracker:
             range_str = ", ".join(f"{st}-{en}" for st, en in merged)
             refs.append(f"{path}:{range_str}")
         return refs
+
+    def checkpoint(self) -> ContextCheckpoint:
+        """Capture current in-memory state before a retryable task."""
+        return ContextCheckpoint(
+            tuple(self._spans), dict(self._file_hashes), self._chars_used
+        )
+
+    def restore_checkpoint(self, checkpoint: ContextCheckpoint) -> None:
+        """Restore an in-memory checkpoint; normal edit conflict checks still apply."""
+        self._spans = list(checkpoint.spans)
+        self._file_hashes = dict(checkpoint.hashes)
+        self._chars_used = checkpoint.chars_used
+
+    def restore_summary(self, spans: list[ContextSpan], chars_used: int) -> None:
+        """Restore display/budget metadata, never stale hashes or edit approvals.
+
+        Resumed sessions must read a file again before editing it, even if its old
+        contents are still present in the conversation.
+        """
+        self._spans = list(spans)
+        self._file_hashes.clear()
+        self._chars_used = max(0, min(chars_used, self.max_context_chars))
 
     def clear(self) -> None:
         self._spans.clear()

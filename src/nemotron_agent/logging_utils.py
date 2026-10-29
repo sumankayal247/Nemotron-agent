@@ -12,6 +12,21 @@ REDACTED = "[REDACTED]"
 
 # Heuristic patterns for common API tokens, headers, and credential fields.
 _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # A provider may echo an uploaded image data URL in an error; do not print it.
+    (
+        re.compile(r"(?i)(data:image/(?:png|jpeg|webp|gif);base64,)[A-Za-z0-9+/=]+"),
+        rf"\1{REDACTED}",
+    ),
+    # Avoid printing credentials embedded in provider URLs.
+    (
+        re.compile(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@"),
+        rf"\1{REDACTED}@",
+    ),
+    # Common secret-bearing URL query parameters.
+    (
+        re.compile(r"(?i)([?&](?:api_?key|access_token|token|password|secret|key)=)([^&#\s]+)"),
+        rf"\1{REDACTED}",
+    ),
     # Authorization headers (Bearer / Token / Basic)
     (
         re.compile(r"(?i)(\bAuthorization\s*[:=]\s*(?:Bearer|Token|Basic)\s+)([^\s\"',;]+)"),
@@ -47,6 +62,17 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
             r"(?i)(\b(?:NEMOTRON_AGENT_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|NVIDIA_API_KEY|api_key|apikey)\s*=\s*)([^\s&\"',;]+)"
         ),
         rf"\1{REDACTED}",
+    ),
+    # Common quoted or unquoted credentials in user-entered text and source snippets.
+    (
+        re.compile(
+            r"(?i)(\b(?:password|passwd|secret_key|access_token|api_key|apikey)\b[\"']?\s*[:=]\s*[\"']?)([^\s\"',;}]+)"
+        ),
+        rf"\1{REDACTED}",
+    ),
+    (
+        re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
+        REDACTED,
     ),
 )
 
@@ -146,6 +172,15 @@ def redact_text(text: str, extra_secrets: tuple[str, ...] = ()) -> str:
 def redact_value(value: Any, extra_secrets: tuple[str, ...] = ()) -> Any:
     """Redact registered secrets and sensitive keys from arbitrary Python structures."""
     return GLOBAL_REDACTOR.redact_value(value, extra_secrets=extra_secrets)
+
+
+def safe_terminal_text(text: str) -> str:
+    """Remove terminal control sequences from untrusted text while retaining line breaks."""
+    # OSC sequences can change a terminal's title/clipboard; CSI and remaining
+    # control characters can manipulate the display or hide approval prompts.
+    text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)", "", text)
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
 
 
 class RedactingFilter(logging.Filter):

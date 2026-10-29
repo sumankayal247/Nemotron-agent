@@ -8,7 +8,14 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from nemotron_agent.logging_utils import ConfigError
 
@@ -76,6 +83,7 @@ class ProviderProfile(BaseModel):
     env_key_names: list[str]
     key_usage_explanation: str
     key_obtain_instructions: str
+    key_management_url: str | None = None
     requires_api_key: bool = True
 
 
@@ -86,16 +94,17 @@ DEFAULT_PROVIDERS: dict[str, ProviderProfile] = {
         default_base_url="https://openrouter.ai/api/v1",
         env_key_names=[ENV_API_KEY, ENV_OPENROUTER_API_KEY],
         key_usage_explanation=(
-            "Your API key is sent only in the HTTP `Authorization: Bearer ...` header "
+            "Your API key is sent in the HTTP Authorization header "
             "over HTTPS to the configured OpenRouter API base URL when validating your "
             "connection or sending prompts. It is never echoed or written to logs, "
             "prompts, conversation history, or repository files."
         ),
         key_obtain_instructions=(
-            "Sign in to your OpenRouter account and create an API key in your account's "
-            "API Keys settings page. Review OpenRouter's current terms, rate limits, and "
-            "data-handling settings (especially for `:free` endpoints) before use."
+            "Sign in to OpenRouter, create an API key, and copy it. The same OpenRouter "
+            "key can be used with its supported models. Review the provider's terms, "
+            "rate limits, and data-handling settings before use."
         ),
+        key_management_url="https://openrouter.ai/settings/keys",
         requires_api_key=True,
     ),
     "openai_compatible": ProviderProfile(
@@ -104,7 +113,7 @@ DEFAULT_PROVIDERS: dict[str, ProviderProfile] = {
         default_base_url="",
         env_key_names=[ENV_API_KEY],
         key_usage_explanation=(
-            "Your API key is sent only in the HTTP `Authorization: Bearer ...` header "
+            "Your API key is sent in the HTTP Authorization header "
             "to your configured OpenAI-compatible base URL. Note that OpenRouter `:free` "
             "model IDs are provider-specific and will not work on other providers unless "
             "independently supported."
@@ -416,6 +425,12 @@ class ConfigManager:
         self.config_path = self.config_dir / CONFIG_FILE_NAME
         self._project_root = project_root.resolve() if project_root else None
 
+    def set_project_root(self, project_root: Path) -> None:
+        """Update the active repository used to guard user-level config writes."""
+        root = project_root.expanduser().resolve()
+        _ensure_not_inside_repo(self.config_dir, root)
+        self._project_root = root
+
     def exists(self) -> bool:
         return self.config_path.is_file()
 
@@ -613,7 +628,7 @@ def get_provider_profile(provider: str) -> ProviderProfile:
         default_base_url="",
         env_key_names=[ENV_API_KEY],
         key_usage_explanation=(
-            f"Your API key is sent only in the HTTP `Authorization: Bearer ...` header "
+            f"Your API key is sent in the HTTP Authorization header "
             f"to the configured base URL for provider '{norm}'."
         ),
         key_obtain_instructions=(

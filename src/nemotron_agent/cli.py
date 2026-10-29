@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import logging
 import sys
 from pathlib import Path
@@ -33,10 +32,12 @@ from nemotron_agent.setup_wizard import (
     InputFn,
     OutputFn,
     SecretInputFn,
+    approve_key_endpoint,
     default_client_factory,
     ensure_ready_or_run_setup,
     format_presets_table,
     run_interactive_setup,
+    secure_secret_input,
 )
 
 KNOWN_SUBCOMMANDS = frozenset({"setup", "config", "auth", "ping", "chat", "ask"})
@@ -349,7 +350,7 @@ def handle_config_or_auth_command(
     config_manager: ConfigManager,
     credential_manager: CredentialManager,
     input_fn: InputFn = input,
-    secret_input_fn: SecretInputFn = getpass.getpass,
+    secret_input_fn: SecretInputFn = secure_secret_input,
     output_fn: OutputFn = print,
     client_factory: ClientFactory = default_client_factory,
 ) -> int:
@@ -506,43 +507,82 @@ def handle_config_or_auth_command(
             return 0
 
         if action == "set-key":
-            target_provider = (args.target_provider or resolved.provider).strip().lower()
+            target_provider = (
+                (args.target_provider or resolved.provider).strip().lower()
+            )
             profile = get_provider_profile(target_provider)
-            output_fn(f"Updating API key for provider: {profile.display_name} ({target_provider})")
+            output_fn(
+                f"Updating API key for provider: {profile.display_name} ({target_provider})"
+            )
             output_fn(f"Where your key is used: {profile.key_usage_explanation}")
             output_fn(f"How to obtain a key: {profile.key_obtain_instructions}")
-            raw_key = secret_input_fn(f"Enter {profile.display_name} API key (hidden): ").strip()
-            if not raw_key:
-                output_fn("Error: API key cannot be empty.")
-                return 1
-            register_secret(raw_key)
-
+            if profile.key_management_url:
+                output_fn(f"Create a key: {profile.key_management_url}")
+            base_url = ""
             if not args.skip_check and target_provider != "mock":
                 base_url = (
                     resolved.base_url
                     if resolved.provider == target_provider and resolved.base_url
                     else profile.default_base_url
                 )
-                if base_url:
-                    client = client_factory(
+                if not base_url:
+                    output_fn(
+                        "Error: Configure the provider base URL first, or explicitly use --skip-check."
+                    )
+                    return 1
+                try:
+                    approved = approve_key_endpoint(
                         target_provider,
                         base_url,
-                        raw_key,
-                        resolved.request_timeout_seconds,
-                        resolved.max_retries,
+                        input_fn=input_fn,
+                        output_fn=output_fn,
                     )
-                    try:
-                        res = client.validate_connection(resolved.model_id)
-                        output_fn(f"Validation succeeded ({res.latency_ms} ms): {res.message}")
-                    finally:
-                        client.close()
+                except AgentError as exc:
+                    output_fn(f"Error: {exc}")
+                    return 1
+                if approved is None:
+                    output_fn(
+                        "Key validation cancelled; the endpoint was not approved."
+                    )
+                    return 1
+            previous_credential = credential_manager.resolve_api_key(target_provider)
+            raw_key = secret_input_fn(
+                f"Paste {profile.display_name} API key (hidden): "
+            ).strip()
+            if not raw_key:
+                output_fn("Error: API key cannot be empty.")
+                return 1
+            register_secret(raw_key)
+
+            if not args.skip_check and target_provider != "mock":
+                client = client_factory(
+                    target_provider,
+                    base_url,
+                    raw_key,
+                    resolved.request_timeout_seconds,
+                    resolved.max_retries,
+                )
+                try:
+                    res = client.validate_connection(resolved.model_id)
+                    if not res.ok:
+                        output_fn(f"Validation failed: {redact_text(res.message)}")
+                        return 1
+                    output_fn(
+                        f"Validation succeeded ({res.latency_ms} ms): {res.message}"
+                    )
+                finally:
+                    client.close()
 
             def _ask_consent(explanation: str) -> bool:
                 output_fn("")
                 output_fn(explanation)
-                ans = input_fn(
-                    "Save API key to this restricted (0600) local credentials file? [y/N]: "
-                ).strip().lower()
+                ans = (
+                    input_fn(
+                        "Save API key to this restricted (0600) local credentials file? [y/N]: "
+                    )
+                    .strip()
+                    .lower()
+                )
                 return ans in ("y", "yes")
 
             try:
@@ -552,7 +592,14 @@ def handle_config_or_auth_command(
                     allow_file_fallback=bool(args.allow_file_fallback),
                     confirm_fallback=_ask_consent,
                 )
+                credential_manager.set_session_key(target_provider, raw_key)
                 output_fn(f"Stored API key in {saved.detail}.")
+                if previous_credential and previous_credential.source.startswith(
+                    "env:"
+                ):
+                    output_fn(
+                        "The new key is active for this session. Update or unset the old environment key for future launches."
+                    )
                 return 0
             except FallbackConsentRequiredError as exc:
                 output_fn(redact_text(str(exc)))
@@ -562,29 +609,15 @@ def handle_config_or_auth_command(
     return 1
 
 
-REPL_HELP_TEXT = """Interactive Chat Commands:
-  /help                        Show this help message
-  /project [local-path]        Show or switch the active local codebase folder on your computer
-  /cd <local-path>             Switch to another local codebase folder (resets file context)
-  /status, /config             Show active provider, model, capabilities, and mode
-  /presets                     List selectable NVIDIA Nemotron presets
-  /model [preset-or-model-id]  Show or switch the active model
-  /provider <name> [base_url]  Switch active provider (and optional base URL)
-  /key                         Update the API key for the active provider
-  /clear-key                   Clear saved credentials for the active provider
-  /context                     Inspect conversation & codebase files currently in context
-  /clear                       Clear conversation history and tracked file context
-  /readonly [on|off]           Inspect or toggle strict read-only mode
-  /exit, /quit                 Exit interactive chat"""
-
-
 def _build_provider_client(
     resolved: ResolvedConfig,
     credential_manager: CredentialManager,
     client_factory: ClientFactory,
 ) -> ProviderClient:
     if resolved.mock_mode:
-        return client_factory("mock", "mock://local", "", resolved.request_timeout_seconds, 0)
+        return client_factory(
+            "mock", "mock://local", "", resolved.request_timeout_seconds, 0
+        )
     cred = credential_manager.resolve_api_key(resolved.provider)
     api_key = cred.api_key if cred is not None else ""
     return client_factory(
@@ -602,203 +635,22 @@ def run_repl(
     config_manager: ConfigManager,
     credential_manager: CredentialManager,
     input_fn: InputFn = input,
-    secret_input_fn: SecretInputFn = getpass.getpass,
+    secret_input_fn: SecretInputFn = secure_secret_input,
     output_fn: OutputFn = print,
     client_factory: ClientFactory = default_client_factory,
 ) -> int:
-    """Run the interactive chat REPL with slash-command management and Ctrl+C recovery."""
-    output_fn(
-        f"Nemotron Agent {__version__} | local codebase: {session.project_root} | "
-        f"provider: {session.config.provider} | model: {session.config.model_id}"
-    )
-    output_fn(
-        "Type your question or task, `/project <path>` to switch local folders, `/help` for commands, or `/exit` to quit."
-    )
+    """Run the registry-driven interactive environment around the existing agent."""
+    from nemotron_agent.repl.session import ReplEnvironment
 
-    while True:
-        try:
-            raw_line = input_fn("\nnemotron> ")
-        except EOFError:
-            output_fn("\nExiting.")
-            return 0
-        except KeyboardInterrupt:
-            output_fn("\n(Use `/exit` or Ctrl+D to quit.)")
-            continue
-
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        if line.startswith("/"):
-            should_exit = _handle_repl_slash_command(
-                line,
-                session=session,
-                config_manager=config_manager,
-                credential_manager=credential_manager,
-                input_fn=input_fn,
-                secret_input_fn=secret_input_fn,
-                output_fn=output_fn,
-                client_factory=client_factory,
-            )
-            if should_exit:
-                return 0
-            continue
-
-        result = session.run_task(line, show_progress=True)
-        output_fn("")
-        output_fn(result.answer)
-        output_fn("")
-        output_fn(result.format_summary())
-
-
-def _handle_repl_slash_command(
-    line: str,
-    *,
-    session: AgentSession,
-    config_manager: ConfigManager,
-    credential_manager: CredentialManager,
-    input_fn: InputFn,
-    secret_input_fn: SecretInputFn,
-    output_fn: OutputFn,
-    client_factory: ClientFactory,
-) -> bool:
-    parts = line.split()
-    cmd = parts[0].lower()
-    args = parts[1:]
-
-    if cmd in ("/exit", "/quit"):
-        output_fn("Goodbye.")
-        return True
-
-    if cmd == "/help":
-        output_fn(REPL_HELP_TEXT)
-        return False
-
-    if cmd in ("/project", "/cd"):
-        raw_target = line[len(parts[0]) :].strip().strip("\"'")
-        if not raw_target:
-            if cmd == "/cd":
-                output_fn("Usage: /cd <local-folder-path>")
-            else:
-                output_fn(f"Active local codebase folder: {session.project_root}")
-            return False
-        try:
-            new_root = session.switch_project_root(raw_target)
-            output_fn(
-                f"Switched active local codebase to '{new_root}' (previous file context cleared)."
-            )
-        except AgentError as exc:
-            output_fn(f"Error: {redact_text(str(exc))}")
-        return False
-
-    if cmd in ("/status", "/config"):
-        output_fn(format_active_config_report(session.config, credential_manager))
-        output_fn(f"  Local codebase    : {session.project_root}")
-        output_fn(f"  Strict read-only  : {session.permissions.policy.read_only}")
-        return False
-
-    if cmd == "/presets":
-        user_cfg = config_manager.load_user_config() or UserConfig()
-        output_fn(format_presets_table(user_cfg.get_presets()))
-        return False
-
-    if cmd == "/context":
-        output_fn(session.inspect_context_status())
-        return False
-
-    if cmd == "/clear":
-        session.clear_context()
-        output_fn("Cleared conversation history and tracked repository file context.")
-        return False
-
-    if cmd == "/readonly":
-        if not args:
-            output_fn(f"Strict read-only mode is {'ON' if session.permissions.policy.read_only else 'OFF'}.")
-            return False
-        val = args[0].lower()
-        if val in ("on", "true", "1"):
-            session.set_read_only(True)
-            output_fn("Strict read-only mode enabled (file edits and commands are disabled).")
-        elif val in ("off", "false", "0"):
-            session.set_read_only(False)
-            output_fn("Default approval-gated mode restored (edits and allowlisted commands ask permission).")
-        else:
-            output_fn("Usage: /readonly [on|off]")
-        return False
-
-    if cmd == "/model":
-        if not args:
-            output_fn(f"Active model: {session.config.model_id} (provider: {session.config.provider})")
-            return False
-        selector = " ".join(args)
-        user_cfg = config_manager.load_user_config() or UserConfig()
-        preset = user_cfg.find_preset(selector)
-        new_model = preset.model_id if preset else selector.strip()
-        new_caps = user_cfg.capabilities_for(new_model)
-        session.config = session.config.model_copy(
-            update={
-                "model_id": new_model,
-                "capabilities": new_caps,
-            }
-        )
-        session.context_tracker.max_context_chars = new_caps.max_context_chars
-        user_cfg.model_id = new_model
-        try:
-            config_manager.save_user_config(user_cfg)
-        except AgentError:
-            pass
-        output_fn(f"Switched active model to '{new_model}'.")
-        return False
-
-    if cmd == "/provider":
-        if not args:
-            output_fn(f"Active provider: {session.config.provider} ({session.config.base_url})")
-            return False
-        prov = args[0].lower()
-        profile = get_provider_profile(prov)
-        url = args[1].rstrip("/") if len(args) > 1 else profile.default_base_url
-        if not url:
-            output_fn(f"Usage: /provider {prov} <https://base-url/v1>")
-            return False
-        is_mock = prov == "mock"
-        session.provider_client.close()
-        session.config = session.config.model_copy(
-            update={"provider": prov, "base_url": url, "mock_mode": is_mock}
-        )
-        session.provider_client = _build_provider_client(
-            session.config, credential_manager, client_factory
-        )
-        output_fn(f"Switched active provider to '{prov}' ({url}).")
-        return False
-
-    if cmd == "/key":
-        parser = build_subcommand_parser()
-        sub_ns = parser.parse_args(["auth", "set-key", "--provider", session.config.provider])
-        rc = handle_config_or_auth_command(
-            sub_ns,
-            config_manager=config_manager,
-            credential_manager=credential_manager,
-            input_fn=input_fn,
-            secret_input_fn=secret_input_fn,
-            output_fn=output_fn,
-            client_factory=client_factory,
-        )
-        if rc == 0 and not session.config.mock_mode:
-            session.provider_client.close()
-            session.provider_client = _build_provider_client(
-                session.config, credential_manager, client_factory
-            )
-        return False
-
-    if cmd == "/clear-key":
-        cleared = credential_manager.clear_credentials(session.config.provider)
-        output_fn(
-            "Cleared credentials: " + (", ".join(cleared) if cleared else "none stored.")
-        )
-        return False
-
-    output_fn(f"Unknown slash command '{cmd}'. Type `/help` for available commands.")
-    return False
+    return ReplEnvironment(
+        session,
+        config_manager=config_manager,
+        credential_manager=credential_manager,
+        input_fn=input_fn,
+        secret_input_fn=secret_input_fn,
+        output_fn=output_fn,
+        client_factory=client_factory,
+    ).run()
 
 
 def _prompt_local_codebase_dir(
@@ -851,7 +703,7 @@ def run_cli(
     config_dir: Path | None = None,
     env: dict[str, str] | None = None,
     input_fn: InputFn = input,
-    secret_input_fn: SecretInputFn = getpass.getpass,
+    secret_input_fn: SecretInputFn = secure_secret_input,
     output_fn: OutputFn = print,
     client_factory: ClientFactory = default_client_factory,
 ) -> int:
@@ -931,22 +783,33 @@ def run_cli(
         cli_timeout=getattr(parsed, "timeout", None),
     )
 
+    # Enter the interactive environment even on first run. The existing setup
+    # wizard is deferred until the first model request (or explicit /setup), so
+    # /help and other local commands remain usable without credentials.
+    defer_setup = parsed.subcommand == "chat" and interactive
     ready = ensure_ready_or_run_setup(
         cfg_mgr,
         cred_mgr,
         resolved=resolved,
-        interactive=interactive,
+        interactive=interactive and not defer_setup,
         input_fn=input_fn,
         secret_input_fn=secret_input_fn,
         output_fn=output_fn,
         client_factory=client_factory,
     )
     if not ready.completed or ready.config is None:
-        output_fn(f"Error: {ready.message}")
-        return 1
+        if not defer_setup:
+            output_fn(f"Error: {ready.message}")
+            return 1
+        from nemotron_agent.providers.unconfigured import UnconfiguredProviderClient
 
-    active_cfg = ready.config
-    client = _build_provider_client(active_cfg, cred_mgr, client_factory)
+        active_cfg = resolved
+        client = UnconfiguredProviderClient(resolved.provider)
+        output_fn("Welcome! Choose a model with /models, or use /setup to connect a provider.")
+    else:
+        active_cfg = ready.config
+        client = _build_provider_client(active_cfg, cred_mgr, client_factory)
+    session: AgentSession | None = None
     try:
         session = AgentSession(
             project_root=repo_root,
@@ -961,6 +824,10 @@ def run_cli(
         )
 
         if parsed.subcommand == "ask":
+            from nemotron_agent.repl.instructions import InstructionFiles
+
+            instructions = InstructionFiles(cfg_mgr.config_dir)
+            session.set_guidance(instructions.guidance(session, warn=output_fn))
             prompt_text = " ".join(parsed.prompt).strip()
             result = session.run_task(prompt_text, show_progress=True)
             output_fn("")
@@ -983,7 +850,8 @@ def run_cli(
         parser.print_help()
         return 0
     finally:
-        client.close()
+        # The interactive environment may have replaced the original client.
+        (session.provider_client if session is not None else client).close()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

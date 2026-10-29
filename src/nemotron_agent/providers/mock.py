@@ -54,7 +54,18 @@ class MockProviderClient(ProviderClient):
         )
 
     def complete(self, request: CompletionRequest) -> CompletionResponse:
-        self.requests.append(request)
+        # The mock keeps request records for diagnostics, but clipboard images
+        # must remain ephemeral just as with a real provider.
+        if any(message.images for message in request.messages):
+            recorded_messages = [
+                message.model_copy(update={"images": []}) if message.images else message
+                for message in request.messages
+            ]
+            self.requests.append(
+                request.model_copy(update={"messages": recorded_messages})
+            )
+        else:
+            self.requests.append(request)
 
         if self._queue:
             step = self._queue.popleft()
@@ -84,7 +95,9 @@ class MockProviderClient(ProviderClient):
         last_user_prompt = ""
         for idx in range(len(request.messages) - 1, -1, -1):
             msg = request.messages[idx]
-            if msg.role == "user" and not msg.content.lstrip().startswith("<tool_result"):
+            if msg.role == "user" and not msg.content.lstrip().startswith(
+                "<tool_result"
+            ):
                 last_user_idx = idx
                 last_user_prompt = msg.content
                 break
@@ -93,17 +106,42 @@ class MockProviderClient(ProviderClient):
         tool_observations = [
             m.content
             for m in trailing
-            if m.role == "tool" or (m.role == "user" and m.content.lstrip().startswith("<tool_result"))
+            if m.role == "tool"
+            or (m.role == "user" and m.content.lstrip().startswith("<tool_result"))
         ]
 
         available_tool_names = {t.name for t in request.tools}
         lower_prompt = last_user_prompt.lower()
 
+        # The interactive planning command must be useful offline too. This is
+        # explicitly a generic mock plan, not a claim that files were inspected.
+        if (
+            "create a concise, numbered execution plan" in lower_prompt
+            and not tool_observations
+        ):
+            return CompletionResponse(
+                content=(
+                    "1. Inspect the relevant repository structure and code.\n"
+                    "2. Identify the likely cause or requirements and associated risks.\n"
+                    "3. Reproduce the issue or establish a baseline where possible.\n"
+                    "4. Propose a minimal implementation.\n"
+                    "5. Run relevant checks with approval and review the diff."
+                ),
+                finish_reason="stop",
+                raw_model=request.model_id,
+            )
+
         if not tool_observations and available_tool_names:
             # Step 1: pick a bounded, appropriate tool based on user prompt
-            call = self._select_initial_tool(last_user_prompt, lower_prompt, available_tool_names)
+            call = self._select_initial_tool(
+                last_user_prompt, lower_prompt, available_tool_names
+            )
             if call is not None:
-                return self._emit_tool_call(request, call, plan_note="Inspecting repository context in mock mode.")
+                return self._emit_tool_call(
+                    request,
+                    call,
+                    plan_note="Inspecting repository context in mock mode.",
+                )
 
         # Step 2: summarize observed tool outputs truthfully
         summary_lines = [
@@ -134,26 +172,43 @@ class MockProviderClient(ProviderClient):
         available: set[str],
     ) -> ToolCallRequest | None:
         # Explicit command request in mock mode
-        if ("run pytest" in lower_prompt or "run tests" in lower_prompt) and "run_command" in available:
+        if (
+            "run pytest" in lower_prompt or "run tests" in lower_prompt
+        ) and "run_command" in available:
             return ToolCallRequest(
                 id="mock-call-1",
                 name="run_command",
-                arguments_raw={"argv": ["pytest"], "reason": "Run project test suite requested by user"},
+                arguments_raw={
+                    "argv": ["pytest"],
+                    "reason": "Run project test suite requested by user",
+                },
             )
 
         # Explicit file read if a relative filename is mentioned
         file_match = _FILE_TOKEN_RE.search(prompt)
-        if file_match and ("read" in lower_prompt or "show" in lower_prompt or "inspect" in lower_prompt):
+        if file_match and (
+            "read" in lower_prompt
+            or "show" in lower_prompt
+            or "inspect" in lower_prompt
+        ):
             if "read_file" in available:
                 return ToolCallRequest(
                     id="mock-call-1",
                     name="read_file",
-                    arguments_raw={"path": file_match.group(1), "start_line": 1, "end_line": 120},
+                    arguments_raw={
+                        "path": file_match.group(1),
+                        "start_line": 1,
+                        "end_line": 120,
+                    },
                 )
 
         # Search request
         if "search" in lower_prompt and "search_files" in available:
-            words = [w for w in re.findall(r"[A-Za-z0-9_]{3,}", prompt) if w.lower() not in {"search", "for", "the", "files", "in", "repo"}]
+            words = [
+                w
+                for w in re.findall(r"[A-Za-z0-9_]{3,}", prompt)
+                if w.lower() not in {"search", "for", "the", "files", "in", "repo"}
+            ]
             query = words[-1] if words else "def"
             return ToolCallRequest(
                 id="mock-call-1",
@@ -182,11 +237,19 @@ class MockProviderClient(ProviderClient):
                 content=plan_note,
                 tool_calls=[call],
                 finish_reason="tool_calls",
-                usage={"prompt_tokens": 48, "completion_tokens": 24, "total_tokens": 72},
+                usage={
+                    "prompt_tokens": 48,
+                    "completion_tokens": 24,
+                    "total_tokens": 72,
+                },
                 raw_model=request.model_id,
             )
         # Exercise fallback `<tool_call>` parser when native tool calling is disabled
-        args_obj = json.loads(call.arguments_raw) if isinstance(call.arguments_raw, str) else call.arguments_raw
+        args_obj = (
+            json.loads(call.arguments_raw)
+            if isinstance(call.arguments_raw, str)
+            else call.arguments_raw
+        )
         raw_text = (
             f"{plan_note}\n"
             f"<tool_call>\n{json.dumps({'name': call.name, 'arguments': args_obj})}\n</tool_call>"

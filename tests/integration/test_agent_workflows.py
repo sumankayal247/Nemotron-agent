@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from nemotron_agent.agent import AgentSession
-from nemotron_agent.config import ConfigManager, ModelCapabilities
+from nemotron_agent.config import ConfigManager
 from nemotron_agent.providers.base import CompletionResponse, ToolCallRequest
 from nemotron_agent.providers.mock import MockProviderClient
 
