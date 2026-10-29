@@ -70,7 +70,7 @@ def test_validate_connection_sends_no_repo_files_or_tools() -> None:
         api_key="sk-or-v1-testkey123456",
         transport=httpx.MockTransport(handler),
     )
-    res = client.validate_connection("nvidia/nemotron-3-super-120b-a12b:free")
+    res = client.validate_connection("nvidia/nemotron-3.5-lightning:free")
     client.close()
 
     assert res.ok is True
@@ -139,7 +139,7 @@ def test_capability_native_vs_fallback_tool_calling() -> None:
     # 1. Native tool calling enabled
     native_resp = client.complete(
         CompletionRequest(
-            model_id="nvidia/nemotron-3-super-120b-a12b:free",
+            model_id="nvidia/nemotron-3.5-lightning:free",
             messages=[ChatMessage(role="user", content="Read README")],
             tools=[tool_spec],
             capabilities=ModelCapabilities(supports_tool_calling=True),
@@ -244,7 +244,7 @@ def test_provider_error_classification_and_bounded_retries() -> None:
         transport=httpx.MockTransport(unauth_handler),
     )
     with pytest.raises(AuthenticationError) as exc_info:
-        client_401.validate_connection("nvidia/nemotron-3-super-120b-a12b:free")
+        client_401.validate_connection("nvidia/nemotron-3.5-lightning:free")
     assert auth_calls == 1
     assert "sk-or-v1-badkey99999999" not in str(exc_info.value)
     client_401.close()
@@ -283,8 +283,8 @@ def test_first_run_setup_and_subsequent_reuse(tmp_path: Path) -> None:
     cred_mgr = CredentialManager(config_dir=cfg_dir, env={}, keyring_adapter=kr)
 
     outputs: list[str] = []
-    # User chooses preset 2 (Nemotron 3.5 Lightning), accepts default OpenRouter base URL
-    inputs = iter(["2", ""])
+    # User chooses preset 1 (Nemotron 3.5 Lightning), accepts default OpenRouter base URL
+    inputs = iter(["1", ""])
     secret_inputs = iter(["sk-or-v1-firstsetupkey12345"])
     mock_client = MockProviderClient(provider="openrouter")
 
@@ -306,7 +306,6 @@ def test_first_run_setup_and_subsequent_reuse(tmp_path: Path) -> None:
     # Ensure key was NEVER printed in setup output
     joined_out = "\n".join(outputs)
     assert "sk-or-v1-firstsetupkey12345" not in joined_out
-    assert "Nemotron 3 Super" in joined_out
     assert "Nemotron 3 Ultra" in joined_out
 
     # Subsequent launch reuses saved configuration without asking any prompts!
@@ -374,9 +373,9 @@ def test_cli_config_and_auth_commands(tmp_path: Path) -> None:
     )
     assert rc == 0
 
-    # Set model to preset 3 (Nemotron 3.5 Super VL)
+    # Set model to preset 2 (Nemotron 3.5 Super VL)
     rc = handle_config_or_auth_command(
-        parser.parse_args(["config", "set-model", "3"]),
+        parser.parse_args(["config", "set-model", "2"]),
         config_manager=cfg_mgr,
         credential_manager=cred_mgr,
         output_fn=out.append,
@@ -662,7 +661,7 @@ def test_explicit_cli_model_is_not_asked_again_when_key_missing(tmp_path):
 def test_setup_respects_new_key_over_old_environment_in_current_session(tmp_path):
     env = {
         "OPENROUTER_API_KEY": "sk-or-v1-oldenvironment123456",
-        "NEMOTRON_AGENT_MODEL": "2",
+        "NEMOTRON_AGENT_MODEL": "1",
     }
     cfg = ConfigManager(config_dir=tmp_path / "cfg", env=env)
     creds = CredentialManager(
@@ -769,9 +768,8 @@ def test_setup_retry_after_preselected_failure_shows_presets_and_honors_new_choi
         output_fn=output.append,
         client_factory=factory,
     )
-    assert outcome.completed and outcome.config.model_id.endswith("lightning:free")
+    assert outcome.completed and outcome.config.model_id.endswith("super-vl:free")
     assert "Available NVIDIA Nemotron presets" in "\n".join(output)
-    assert "Nemotron 3 Super" in "\n".join(output)
 
 
 def test_auth_refuses_unapproved_insecure_endpoint_before_key_input(tmp_path):

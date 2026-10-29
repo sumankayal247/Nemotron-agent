@@ -22,28 +22,34 @@ from nemotron_agent.config import (
 from nemotron_agent.logging_utils import ConfigError
 
 
-def test_four_required_nemotron_presets_present_and_accurate() -> None:
+def test_nemotron_presets_present_and_accurate() -> None:
     expected = [
-        ("Nemotron 3 Super", "nvidia/nemotron-3-super-120b-a12b:free"),
         ("Nemotron 3.5 Lightning", "nvidia/nemotron-3.5-lightning:free"),
         ("Nemotron 3.5 Super VL", "nvidia/nemotron-3.5-super-vl:free"),
         ("Nemotron 3 Ultra", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+        ("Nemotron 3 Nano Omni Reasoning", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"),
+        ("Llama 3.1 Nemotron 70B", "nvidia/llama-3.1-nemotron-70b-instruct:free"),
+        ("Llama 3.1 Nemotron Nano 8B", "nvidia/llama-3.1-nemotron-nano-8b-v1:free"),
     ]
     assert [(p.display_name, p.model_id) for p in DEFAULT_MODEL_PRESETS] == expected
     for preset in DEFAULT_MODEL_PRESETS:
         assert preset.provider == "openrouter"
         assert preset.is_free_endpoint is True
+        assert ":free" in preset.model_id
         assert len(preset.description) > 20
 
 
 def test_presets_lookup_by_index_slug_name_and_id() -> None:
     cfg = UserConfig()
     assert cfg.find_preset("1") is not None
-    assert cfg.find_preset("1").model_id == "nvidia/nemotron-3-super-120b-a12b:free"
-    assert cfg.find_preset("nemotron-3.5-lightning").index == 2
+    assert cfg.find_preset("1").model_id == "nvidia/nemotron-3.5-lightning:free"
+    assert cfg.find_preset("nemotron-3.5-lightning").index == 1
     assert cfg.find_preset("Nemotron 3.5 Super VL").capabilities.supports_vision is True
     assert cfg.find_preset("Nemotron 3.5 Super VL").capabilities.supports_tool_calling is False
-    assert cfg.find_preset("nvidia/nemotron-3-ultra-550b-a55b:free").index == 4
+    assert cfg.find_preset("nvidia/nemotron-3-ultra-550b-a55b:free").index == 3
+    assert cfg.find_preset("nvidia/llama-3.1-nemotron-70b-instruct:free").index == 5
+    assert cfg.find_preset("nvidia/llama-3.1-nemotron-nano-8b-v1:free").index == 6
+    assert cfg.find_preset("nvidia/nemotron-3-super-120b-a12b:free") is None
     assert cfg.find_preset("nonexistent-model") is None
 
 
@@ -51,8 +57,8 @@ def test_presets_can_be_updated_in_config_without_code_changes(tmp_path: Path) -
     cfg_dir = tmp_path / "user_cfg"
     mgr = ConfigManager(config_dir=cfg_dir)
     cfg = UserConfig()
-    cfg.presets[1].model_id = "nvidia/nemotron-3.5-lightning-v2:free"
-    cfg.capability_overrides["nvidia/nemotron-3.5-lightning-v2:free"] = ModelCapabilities(
+    cfg.presets[1].model_id = "nvidia/nemotron-3.5-super-vl-v2:free"
+    cfg.capability_overrides["nvidia/nemotron-3.5-super-vl-v2:free"] = ModelCapabilities(
         supports_tool_calling=False,
         max_context_chars=24000,
     )
@@ -60,8 +66,8 @@ def test_presets_can_be_updated_in_config_without_code_changes(tmp_path: Path) -
 
     loaded = mgr.load_user_config()
     assert loaded is not None
-    assert loaded.find_preset("2").model_id == "nvidia/nemotron-3.5-lightning-v2:free"
-    caps = loaded.capabilities_for("nvidia/nemotron-3.5-lightning-v2:free")
+    assert loaded.find_preset("2").model_id == "nvidia/nemotron-3.5-super-vl-v2:free"
+    caps = loaded.capabilities_for("nvidia/nemotron-3.5-super-vl-v2:free")
     assert caps.supports_tool_calling is False
     assert caps.max_context_chars == 24000
 
@@ -91,7 +97,7 @@ def test_configuration_precedence_cli_over_env_over_saved_over_default(tmp_path:
     cfg_dir = tmp_path / "cfg"
     saved = UserConfig(
         provider="openrouter",
-        model_id="nvidia/nemotron-3-super-120b-a12b:free",
+        model_id="nvidia/nemotron-3.5-lightning:free",
         base_url="https://openrouter.ai/api/v1",
         max_turns=6,
     )
@@ -118,7 +124,7 @@ def test_configuration_precedence_cli_over_env_over_saved_over_default(tmp_path:
         cli_base_url="https://cli.example.org/v1/",
         cli_max_turns=4,
     )
-    assert resolved_cli.model_id == "nvidia/nemotron-3.5-lightning:free"
+    assert resolved_cli.model_id == "nvidia/nemotron-3.5-super-vl:free"
     assert resolved_cli.base_url == "https://cli.example.org/v1"
     assert resolved_cli.max_turns == 4
     assert resolved_cli.sources["model_id"] == "cli"

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Sequence
 
 from nemotron_agent import __version__
 from nemotron_agent.agent import AgentSession
+from nemotron_agent.update import InstallMethod, UpdateManager
 from nemotron_agent.config import (
     DEFAULT_PROVIDERS,
     ConfigManager,
@@ -40,7 +42,7 @@ from nemotron_agent.setup_wizard import (
     secure_secret_input,
 )
 
-KNOWN_SUBCOMMANDS = frozenset({"setup", "config", "auth", "ping", "chat", "ask"})
+KNOWN_SUBCOMMANDS = frozenset({"setup", "config", "auth", "ping", "chat", "ask", "update"})
 
 _VALUE_FLAGS = frozenset(
     {
@@ -199,6 +201,12 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
         "chat", help="Start an interactive repository-aware chat session."
     )
     _add_global_flags(sub_chat, is_subparser=True)
+    sub_chat.add_argument(
+        "--no-tui",
+        action="store_true",
+        default=False,
+        help="Use the classic line-based REPL instead of the full-screen TUI.",
+    )
 
     # ask (one-shot prompt)
     sub_ask = subparsers.add_parser(
@@ -269,6 +277,24 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
     cfg_cap.add_argument("--tool-calling", choices=["on", "off"], default=None)
     cfg_cap.add_argument("--structured-output", choices=["on", "off"], default=None)
     cfg_cap.add_argument("--vision", choices=["on", "off"], default=None)
+
+    # update
+    sub_update = subparsers.add_parser(
+        "update", help="Check for and apply nemotron-agent updates."
+    )
+    _add_global_flags(sub_update, is_subparser=True)
+    sub_update.add_argument(
+        "--check",
+        action="store_true",
+        default=False,
+        help="Only report current/latest version; do not install anything.",
+    )
+    sub_update.add_argument(
+        "--yes",
+        action="store_true",
+        default=False,
+        help="Install the update without asking for confirmation.",
+    )
 
     # auth
     sub_auth = subparsers.add_parser("auth", help="Manage provider API credentials.")
@@ -605,8 +631,59 @@ def handle_config_or_auth_command(
                 output_fn(redact_text(str(exc)))
                 return 1
 
+    if args.subcommand == "update":
+        return _handle_update_command(
+            args,
+            output_fn=output_fn,
+        )
+
     output_fn("Unknown command. Run `nemotron-agent --help` for usage.")
     return 1
+
+
+def _handle_update_command(args: argparse.Namespace, *, output_fn: OutputFn = print) -> int:
+    """`nemotron-agent update`: report and optionally apply updates."""
+
+    mgr = UpdateManager()
+    info = mgr.check_for_update()
+    lines: list[str] = [
+        f"nemotron-agent {info.current}",
+        f"Install method: {info.method.value}",
+    ]
+    if info.latest:
+        lines.append(
+            f"Latest version: {info.latest} "
+            + ("(update available)" if info.available else "(up to date)")
+        )
+    else:
+        lines.append("Latest version: unable to reach PyPI")
+    if info.error:
+        lines.append(f"Note: {info.error}")
+    if info.dirty:
+        lines.append("Warning: uncommitted changes detected in the working tree.")
+
+    if args.check or not info.available:
+        output_fn("\n".join(lines))
+        return 0
+
+    if info.dirty:
+        result = mgr.apply_update(
+            check_only=False, yes=args.yes, restart_on_success=bool(args.yes)
+        )
+        output_fn(result.message)
+        return 0 if result.ok else 1
+
+    if not args.yes:
+        output_fn("\n".join(lines))
+        output_fn(
+            f"Update {info.latest} is available ({info.method.value}). "
+            f"Run `nemotron-agent update --yes` to install and auto-restart."
+        )
+        return 0
+
+    result = mgr.apply_update(check_only=False, yes=True, restart_on_success=True)
+    output_fn(result.message)
+    return 0 if result.ok else 1
 
 
 def _build_provider_client(
@@ -638,11 +715,16 @@ def run_repl(
     secret_input_fn: SecretInputFn = secure_secret_input,
     output_fn: OutputFn = print,
     client_factory: ClientFactory = default_client_factory,
+    use_tui: bool | None = None,
 ) -> int:
-    """Run the registry-driven interactive environment around the existing agent."""
+    """Run the registry-driven interactive environment around the existing agent.
+
+    By default (a real terminal) the full-screen prompt_toolkit TUI is used;
+    pass ``use_tui=False`` (or ``--no-tui``) for the classic line-based REPL.
+    """
     from nemotron_agent.repl.session import ReplEnvironment
 
-    return ReplEnvironment(
+    env = ReplEnvironment(
         session,
         config_manager=config_manager,
         credential_manager=credential_manager,
@@ -650,7 +732,25 @@ def run_repl(
         secret_input_fn=secret_input_fn,
         output_fn=output_fn,
         client_factory=client_factory,
-    ).run()
+    )
+
+    if use_tui is None:
+        use_tui = (
+            sys.stdin.isatty()
+            and sys.stdout.isatty()
+            and os.environ.get("PYTEST_CURRENT_TEST") is None
+        )
+
+    if use_tui:
+        from nemotron_agent.tui.app import NemotronTuiApp
+
+        app = NemotronTuiApp(env)
+        env.input_fn = app.request_input
+        env.secret_input_fn = lambda prompt: app.request_input(prompt, secret=True)
+        env._output_fn = app._append_output
+        return app.run()
+
+    return env.run()
 
 
 def _prompt_local_codebase_dir(
@@ -716,7 +816,7 @@ def run_cli(
 
     explicit_repo: str | None = getattr(parsed, "repo", None)
 
-    if parsed.subcommand in {"setup", "config", "auth", "ping"}:
+    if parsed.subcommand in {"setup", "config", "auth", "ping", "update"}:
         explicit_root = Path(explicit_repo).expanduser().resolve() if explicit_repo else None
         cfg_mgr = ConfigManager(config_dir=config_dir, env=env, project_root=explicit_root)
         cred_mgr = CredentialManager(config_dir=config_dir, env=env, project_root=explicit_root)
@@ -845,6 +945,7 @@ def run_cli(
                 secret_input_fn=secret_input_fn,
                 output_fn=output_fn,
                 client_factory=client_factory,
+                use_tui=(False if getattr(parsed, "no_tui", False) else None),
             )
 
         parser.print_help()

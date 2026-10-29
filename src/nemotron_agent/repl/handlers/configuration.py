@@ -11,6 +11,7 @@ from nemotron_agent.repl.commands import (
     Invocation,
 )
 from nemotron_agent.setup_wizard import run_interactive_setup
+from nemotron_agent.tui.theme import theme_display, theme_for
 
 
 class ConfigurationCommands:
@@ -144,6 +145,79 @@ class ConfigurationCommands:
             self.save()
             return True
         return False
+
+    def cmd_color(self, inv: Invocation) -> None:
+        args = list(inv.args)
+        if args:
+            name = args[0].strip().lower()
+        else:
+            name = (
+                self.input_fn("Prompt color (orange/blue/neon_green): ")
+                .strip()
+                .lower()
+            )
+        try:
+            self.theme = theme_for(name)
+        except ValueError as exc:
+            self.output(f"Error: {exc}")
+            return
+        saved = self.user_config()
+        saved.prompt_color = name
+        try:
+            self.config_manager.save_user_config(saved)
+        except AgentError as exc:
+            self.output(f"Error: {exc}")
+            return
+        self.output(f"Prompt color set to {theme_display(name)}.")
+        self.save()
+
+    def cmd_update(self, inv: Invocation) -> None:
+        """Check for and optionally apply nemotron-agent updates (/update [--check|--yes])."""
+
+        from nemotron_agent.cli import build_subcommand_parser
+        from nemotron_agent.update import UpdateManager
+
+        parser = build_subcommand_parser()
+        errors = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(errors):
+                parsed = parser.parse_args(["update", *list(inv.args)])
+        except SystemExit as exc:
+            self.output(errors.getvalue().strip() or f"Invalid /update arguments.")
+            return
+
+        mgr = UpdateManager()
+        info = mgr.check_for_update()
+        lines = [
+            f"nemotron-agent {info.current}",
+            f"Install method: {info.method.value}",
+        ]
+        if info.latest:
+            lines.append(
+                f"Latest version: {info.latest} "
+                + ("(update available)" if info.available else "(up to date)")
+            )
+        else:
+            lines.append("Latest version: unable to reach PyPI")
+        if info.error:
+            lines.append(f"Note: {info.error}")
+        if info.dirty:
+            lines.append("Warning: uncommitted changes detected in the working tree.")
+
+        if parsed.check or not info.available:
+            self.output("\n".join(lines))
+            return
+
+        if not parsed.yes:
+            self.output("\n".join(lines))
+            self.output(
+                f"Update {info.latest} is available ({info.method.value}). "
+                "Run `/update --yes` to install and restart nemotron-agent."
+            )
+            return
+
+        result = mgr.apply_update(check_only=False, yes=True, restart_on_success=True)
+        self.output(result.message)
 
     def cmd_ping(self, inv: Invocation) -> None:
         self._ensure_client()

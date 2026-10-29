@@ -138,13 +138,13 @@ DEFAULT_PROVIDERS: dict[str, ProviderProfile] = {
 DEFAULT_MODEL_PRESETS: tuple[ModelPreset, ...] = (
     ModelPreset(
         index=1,
-        slug="nemotron-3-super",
-        display_name="Nemotron 3 Super",
-        model_id="nvidia/nemotron-3-super-120b-a12b:free",
+        slug="nemotron-3.5-lightning",
+        display_name="Nemotron 3.5 Lightning",
+        model_id="nvidia/nemotron-3.5-lightning:free",
         provider="openrouter",
         description=(
-            "Hybrid MoE Nemotron 3 model (120B total / 12B active) via OpenRouter; "
-            "balanced default for repository Q&A, code analysis, and tool-assisted edits."
+            "Low-latency Nemotron 3.5 MoE preset (3B active / 30B total) via OpenRouter; "
+            "native tool-calling default for fast interactive coding questions and edits."
         ),
         is_free_endpoint=True,
         capabilities=ModelCapabilities(
@@ -152,34 +152,13 @@ DEFAULT_MODEL_PRESETS: tuple[ModelPreset, ...] = (
             supports_structured_output=False,
             supports_vision=False,
             supports_temperature=True,
-            context_window_tokens=65536,
+            context_window_tokens=1_000_000,
             max_context_chars=48000,
             default_max_tokens=2048,
         ),
     ),
     ModelPreset(
         index=2,
-        slug="nemotron-3.5-lightning",
-        display_name="Nemotron 3.5 Lightning",
-        model_id="nvidia/nemotron-3.5-lightning:free",
-        provider="openrouter",
-        description=(
-            "Low-latency Nemotron 3.5 preset via OpenRouter for fast interactive coding "
-            "questions and lightweight edits."
-        ),
-        is_free_endpoint=True,
-        capabilities=ModelCapabilities(
-            supports_tool_calling=True,
-            supports_structured_output=False,
-            supports_vision=False,
-            supports_temperature=True,
-            context_window_tokens=32768,
-            max_context_chars=36000,
-            default_max_tokens=2048,
-        ),
-    ),
-    ModelPreset(
-        index=3,
         slug="nemotron-3.5-super-vl",
         display_name="Nemotron 3.5 Super VL",
         model_id="nvidia/nemotron-3.5-super-vl:free",
@@ -194,13 +173,13 @@ DEFAULT_MODEL_PRESETS: tuple[ModelPreset, ...] = (
             supports_structured_output=False,
             supports_vision=True,
             supports_temperature=True,
-            context_window_tokens=32768,
+            context_window_tokens=128_000,
             max_context_chars=32000,
             default_max_tokens=2048,
         ),
     ),
     ModelPreset(
-        index=4,
+        index=3,
         slug="nemotron-3-ultra",
         display_name="Nemotron 3 Ultra",
         model_id="nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -215,8 +194,71 @@ DEFAULT_MODEL_PRESETS: tuple[ModelPreset, ...] = (
             supports_structured_output=False,
             supports_vision=False,
             supports_temperature=True,
-            context_window_tokens=65536,
+            context_window_tokens=1_000_000,
             max_context_chars=56000,
+            default_max_tokens=2048,
+        ),
+    ),
+    ModelPreset(
+        index=4,
+        slug="nemotron-3-nano-omni-reasoning",
+        display_name="Nemotron 3 Nano Omni Reasoning",
+        model_id="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        provider="openrouter",
+        description=(
+            "Compact multimodal Nemotron 3 Nano (30B total / 3B active) via OpenRouter; "
+            "free, reasoning-oriented, text-only in this preset."
+        ),
+        is_free_endpoint=True,
+        capabilities=ModelCapabilities(
+            supports_tool_calling=False,
+            supports_structured_output=False,
+            supports_vision=False,
+            supports_temperature=True,
+            context_window_tokens=262_000,
+            max_context_chars=40000,
+            default_max_tokens=2048,
+        ),
+    ),
+    ModelPreset(
+        index=5,
+        slug="llama-3.1-nemotron-70b",
+        display_name="Llama 3.1 Nemotron 70B",
+        model_id="nvidia/llama-3.1-nemotron-70b-instruct:free",
+        provider="openrouter",
+        description=(
+            "Llama 3.1 Nemotron 70B instruct via OpenRouter; strong general-purpose "
+            "coding assistant with native tool-calling."
+        ),
+        is_free_endpoint=True,
+        capabilities=ModelCapabilities(
+            supports_tool_calling=True,
+            supports_structured_output=False,
+            supports_vision=False,
+            supports_temperature=True,
+            context_window_tokens=128_000,
+            max_context_chars=48000,
+            default_max_tokens=2048,
+        ),
+    ),
+    ModelPreset(
+        index=6,
+        slug="llama-3.1-nemotron-nano-8b",
+        display_name="Llama 3.1 Nemotron Nano 8B",
+        model_id="nvidia/llama-3.1-nemotron-nano-8b-v1:free",
+        provider="openrouter",
+        description=(
+            "Small, fast Llama 3.1 Nemotron Nano 8B via OpenRouter for lightweight "
+            "repository Q&A and quick edits."
+        ),
+        is_free_endpoint=True,
+        capabilities=ModelCapabilities(
+            supports_tool_calling=True,
+            supports_structured_output=False,
+            supports_vision=False,
+            supports_temperature=True,
+            context_window_tokens=128_000,
+            max_context_chars=36000,
             default_max_tokens=2048,
         ),
     ),
@@ -254,6 +296,15 @@ class UserConfig(BaseModel):
     extra_allowed_commands: list[list[str]] = Field(default_factory=list)
     presets: list[ModelPreset] = Field(default_factory=lambda: [p.model_copy(deep=True) for p in DEFAULT_MODEL_PRESETS])
     capability_overrides: dict[str, ModelCapabilities] = Field(default_factory=dict)
+    prompt_color: str = "orange"
+
+    @field_validator("prompt_color")
+    @classmethod
+    def _validate_prompt_color(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned not in {"orange", "blue", "neon_green"}:
+            raise ValueError("prompt_color must be one of: orange, blue, neon_green")
+        return cleaned
 
     @model_validator(mode="before")
     @classmethod
