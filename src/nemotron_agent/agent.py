@@ -478,7 +478,7 @@ class AgentSession:
                             f"{call.name}({self._summarize_call_args(call)})"
                         )
 
-                    # Loop safeguard against repeated identical read-only calls
+                    # Loop safeguard against repeated identical calls
                     sig = self._call_signature(call)
                     if call.name in {
                         "repo_overview",
@@ -490,7 +490,24 @@ class AgentSession:
                         if seen_readonly_calls[sig] > 2:
                             loop_msg = (
                                 f"Loop safeguard: `{call.name}` with identical arguments was already "
-                                "called multiple times. Use the earlier result to proceed."
+                                "called multiple times. Do not search or read the same target again. "
+                                "Use the earlier results or proceed with the required code modifications."
+                            )
+                            self.messages.append(
+                                ChatMessage(
+                                    role="tool",
+                                    tool_call_id=call.id,
+                                    name=call.name,
+                                    content=loop_msg,
+                                )
+                            )
+                            continue
+                    elif call.name == "edit_file":
+                        seen_readonly_calls[sig] = seen_readonly_calls.get(sig, 0) + 1
+                        if seen_readonly_calls[sig] > 2:
+                            loop_msg = (
+                                f"Loop safeguard: `edit_file` with identical edit was already attempted "
+                                "multiple times. Do not repeat the same edit. Move forward to the next step or conclude."
                             )
                             self.messages.append(
                                 ChatMessage(

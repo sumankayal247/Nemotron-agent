@@ -603,8 +603,20 @@ class NemotronTuiApp(Application):
         self._show_thinking()
         self.invalidate()
         result = None
+        current_prompt = text
+        max_continuations = 3  # Allow continuing up to 3 times if turn/tool limit is reached mid-task
+        continuations = 0
+
         try:
-            result = await asyncio.to_thread(self.env.execute_prompt, text, print_result=False)
+            while True:
+                result = await asyncio.to_thread(self.env.execute_prompt, current_prompt, print_result=False)
+                if result is not None and result.status in {"turn_limit", "tool_limit"} and continuations < max_continuations:
+                    # If files were changed or commands run, or unfinished steps remain, continue seamlessly
+                    continuations += 1
+                    self._append_output(f"Continuing task (continuation {continuations}/{max_continuations})…")
+                    current_prompt = "Continue seamlessly from where you stopped. Do not repeat earlier searches or edits; proceed directly with the next required steps."
+                    continue
+                break
         except AgentError as exc:
             self._show_error(exc.safe_message)
         except Exception as exc:  # pragma: no cover - defensive UI boundary

@@ -286,8 +286,8 @@ class UserConfig(BaseModel):
     provider: str = "openrouter"
     model_id: str = DEFAULT_MODEL_PRESETS[0].model_id
     base_url: str = DEFAULT_PROVIDERS["openrouter"].default_base_url
-    max_turns: int = Field(default=8, ge=1, le=50)
-    max_tool_calls: int = Field(default=12, ge=1, le=100)
+    max_turns: int = Field(default=30, ge=1, le=100)
+    max_tool_calls: int = Field(default=50, ge=1, le=200)
     request_timeout_seconds: float = Field(default=30.0, gt=1.0, le=300.0)
     max_retries: int = Field(default=2, ge=0, le=5)
     command_timeout_seconds: float = Field(default=60.0, gt=1.0, le=600.0)
