@@ -578,7 +578,7 @@ class NemotronTuiApp(Application):
         self.invalidate()
         result = None
         try:
-            result = await asyncio.to_thread(self.env.execute_prompt, text)
+            result = await asyncio.to_thread(self.env.execute_prompt, text, print_result=False)
         except AgentError as exc:
             self._show_error(exc.safe_message)
         except Exception as exc:  # pragma: no cover - defensive UI boundary

@@ -410,7 +410,7 @@ class ReplEnvironment(
             self._replace_provider(self.session.config)
 
     def execute_prompt(
-        self, prompt: str, *, planning: bool = False
+        self, prompt: str, *, planning: bool = False, print_result: bool = True
     ) -> TaskRunResult | None:
         text = prompt.strip()
         if not text:
@@ -494,10 +494,11 @@ class ReplEnvironment(
                 self.artifacts.append(
                     ArtifactRecord(path=change.path, created_at=utc_now())
                 )
-        self.output("")
-        self.output(result.answer)
-        self.output("")
-        self.output(result.format_summary())
+        if print_result:
+            self.output("")
+            self.output(result.answer)
+            self.output("")
+            self.output(result.format_summary())
         self.save()
         return result
 
