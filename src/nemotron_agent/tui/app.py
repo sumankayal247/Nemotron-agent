@@ -56,6 +56,57 @@ def _pane_height(rows: int) -> int:
     return max(5, rows - _OVERHEAD_LINES)
 
 
+def _wrap_line_segments(line: list, max_cols: int) -> list[list]:
+    """Wrap a styled FormattedText line to fit within max_cols without truncation."""
+    if not line or max_cols <= 10:
+        return [line]
+
+    tokens: list[tuple[str, str]] = []
+    for seg in line:
+        if not isinstance(seg, (tuple, list)) or len(seg) < 2:
+            continue
+        style, text = seg[0], str(seg[1])
+        parts = text.split(" ")
+        for i, p in enumerate(parts):
+            if i > 0:
+                tokens.append((style, " "))
+            if p:
+                tokens.append((style, p))
+
+    rows: list[list] = []
+    current_row: list = []
+    current_len = 0
+
+    for style, tok in tokens:
+        tok_len = len(tok)
+        if current_len + tok_len <= max_cols:
+            current_row.append((style, tok))
+            current_len += tok_len
+        elif tok == " ":
+            if current_row:
+                rows.append(current_row)
+                current_row = []
+                current_len = 0
+        else:
+            if current_row:
+                rows.append(current_row)
+                current_row = []
+                current_len = 0
+            if tok_len <= max_cols:
+                current_row.append((style, tok))
+                current_len = tok_len
+            else:
+                rem = tok
+                while rem:
+                    take = rem[:max_cols]
+                    rows.append([(style, take)])
+                    rem = rem[max_cols:]
+
+    if current_row:
+        rows.append(current_row)
+    return rows or [[]]
+
+
 def _flatten_block(lines: list, mouse_handler: Callable[[MouseEvent], object] | None = None) -> list[tuple]:
     """Flatten a list of lines (where each line is a list of (style, text) tuples)
 
@@ -249,9 +300,16 @@ class NemotronTuiApp(Application):
         self._safe_invalidate()
 
     def _get_all_conversation_lines(self) -> Block:
+        try:
+            cols = max(20, self.output.size.columns - 2)
+        except Exception:
+            cols = 80
+
         lines: Block = []
         for _kind, block in self._blocks:
-            lines.extend(block)
+            for raw_line in block:
+                wrapped_lines = _wrap_line_segments(raw_line, cols)
+                lines.extend(wrapped_lines)
             lines.append([])  # gap between blocks
         if lines:
             lines.pop()
@@ -313,7 +371,7 @@ class NemotronTuiApp(Application):
         session_state = "Resumed" if getattr(self.env, "resume_recap", "") else "New session"
         lines.append([(theme.muted, "  Session    : "), (theme.ok, session_state)])
         lines.append([])
-        lines.append([(theme.muted, "  / commands   @ files   ? help   ↑↓ history/scroll")])
+        lines.append([(theme.muted, "  / commands   @ files   ? help   Ctrl+Y copy   ↑↓ history/scroll")])
         lines.append([])
         return lines
 
@@ -367,6 +425,55 @@ class NemotronTuiApp(Application):
                 self._add_block("tool", [[(style, "  "), (style, subline)]])
             else:
                 self._add_block("tool", [[(style, icon), (style, rest)]])
+
+    def _copy_transcript_to_clipboard(self) -> None:
+        """Copy the last answer or conversation transcript to desktop clipboard."""
+        target_text = ""
+        if self.env.last_answer:
+            target_text = self.env.last_answer
+        else:
+            # Flatten all blocks into readable text
+            text_lines = []
+            for _kind, block in self._blocks:
+                for line in block:
+                    text_lines.append("".join(seg[1] for seg in line))
+            target_text = "\n".join(text_lines)
+
+        if not target_text.strip():
+            self._append_output("No conversation text to copy.")
+            return
+
+        import shutil, subprocess
+        clean = safe_terminal_text(target_text)
+        copied = False
+        if shutil.which("wl-copy"):
+            try:
+                subprocess.run(["wl-copy"], input=clean, text=True, check=True, timeout=5)
+                copied = True
+            except Exception:
+                pass
+        elif shutil.which("xclip"):
+            try:
+                subprocess.run(["xclip", "-selection", "clipboard"], input=clean, text=True, check=True, timeout=5)
+                copied = True
+            except Exception:
+                pass
+        elif shutil.which("pbcopy"):
+            try:
+                subprocess.run(["pbcopy"], input=clean, text=True, check=True, timeout=5)
+                copied = True
+            except Exception:
+                pass
+
+        if copied:
+            self._append_output("✓ Copied conversation to clipboard!")
+        else:
+            # Terminal OSC 52 fallback
+            import base64
+            encoded = base64.b64encode(clean.encode("utf-8")).decode("ascii")
+            sys.stdout.write(f"\033]52;c;{encoded}\a")
+            sys.stdout.flush()
+            self._append_output("✓ Copied to clipboard via terminal (OSC 52).")
 
     def _show_thinking(self, message: str = "⟳ Nemotron is thinking…") -> None:
         self._thinking = True
@@ -819,6 +926,11 @@ class NemotronTuiApp(Application):
                 app._open_file_picker()
             elif app._modal is None:
                 app._input_buffer.insert_text("@")
+
+        @bindings.add("c-y")
+        def _(event) -> None:
+            """Ctrl+Y: Quick copy last assistant answer or conversation transcript to desktop clipboard."""
+            app._copy_transcript_to_clipboard()
 
         @bindings.add("?")
         def _(event) -> None:

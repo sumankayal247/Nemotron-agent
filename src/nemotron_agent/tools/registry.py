@@ -201,20 +201,46 @@ class ToolRegistry:
                 f"Arguments for tool '{name}' must decode to a JSON object, got {type(parsed_dict).__name__}."
             )
 
-        # Smart defaults for read_file when only start_line or only end_line is given
-        if name == "read_file" and isinstance(parsed_dict, dict):
-            if "start_line" in parsed_dict and "end_line" not in parsed_dict:
-                try:
-                    s_line = int(parsed_dict["start_line"])
-                    parsed_dict["end_line"] = s_line + 199
-                except (ValueError, TypeError):
-                    pass
-            elif "end_line" in parsed_dict and "start_line" not in parsed_dict:
-                try:
-                    e_line = int(parsed_dict["end_line"])
-                    parsed_dict["start_line"] = max(1, e_line - 199)
-                except (ValueError, TypeError):
-                    pass
+        # Smart normalization for tools:
+        if isinstance(parsed_dict, dict):
+            # read_file: auto-fill start_line / end_line
+            if name == "read_file":
+                if "start_line" in parsed_dict and "end_line" not in parsed_dict:
+                    try:
+                        s_line = int(parsed_dict["start_line"])
+                        parsed_dict["end_line"] = s_line + 199
+                    except (ValueError, TypeError):
+                        pass
+                elif "end_line" in parsed_dict and "start_line" not in parsed_dict:
+                    try:
+                        e_line = int(parsed_dict["end_line"])
+                        parsed_dict["start_line"] = max(1, e_line - 199)
+                    except (ValueError, TypeError):
+                        pass
+
+            # run_command: if model passed argv as string (or command/cmd), convert to list via shlex
+            elif name == "run_command":
+                raw_cmd = parsed_dict.get("argv") or parsed_dict.get("command") or parsed_dict.get("cmd")
+                if isinstance(raw_cmd, str):
+                    import shlex
+                    try:
+                        parsed_dict["argv"] = shlex.split(raw_cmd.strip())
+                    except Exception:
+                        parsed_dict["argv"] = [raw_cmd.strip()]
+                if not parsed_dict.get("reason"):
+                    parsed_dict["reason"] = "Execute development command"
+
+            # search_files: default file_glob if empty
+            elif name == "search_files":
+                if not parsed_dict.get("directory"):
+                    parsed_dict["directory"] = "."
+                if not parsed_dict.get("file_glob"):
+                    parsed_dict["file_glob"] = "*"
+
+            # list_files: default directory if empty
+            elif name == "list_files":
+                if not parsed_dict.get("directory"):
+                    parsed_dict["directory"] = "."
 
         try:
             validated_args = tool.args_model.model_validate(parsed_dict)

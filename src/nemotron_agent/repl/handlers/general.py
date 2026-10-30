@@ -84,8 +84,36 @@ class GeneralCommands:
             )
             return
         clean = redact_text(self.last_answer)
-        if len(clean.encode("utf-8")) > 100_000:
-            raise AgentError("Answer is too large for terminal clipboard copy.")
+        if len(clean.encode("utf-8")) > 500_000:
+            raise AgentError("Answer is too large for clipboard copy.")
+
+        # Try system clipboard commands first (Wayland wl-copy, X11 xclip, macOS pbcopy)
+        import shutil, subprocess
+        copied = False
+        if shutil.which("wl-copy"):
+            try:
+                subprocess.run(["wl-copy"], input=clean, text=True, check=True, timeout=5)
+                copied = True
+            except Exception:
+                pass
+        elif shutil.which("xclip"):
+            try:
+                subprocess.run(["xclip", "-selection", "clipboard"], input=clean, text=True, check=True, timeout=5)
+                copied = True
+            except Exception:
+                pass
+        elif shutil.which("pbcopy"):
+            try:
+                subprocess.run(["pbcopy"], input=clean, text=True, check=True, timeout=5)
+                copied = True
+            except Exception:
+                pass
+
+        if copied:
+            self.output("Copied last assistant response to clipboard.")
+            return
+
+        # Fallback to OSC 52 terminal copy sequence
         encoded = base64.b64encode(clean.encode("utf-8")).decode("ascii")
         sys.stdout.write(f"\033]52;c;{encoded}\a")
         sys.stdout.flush()
