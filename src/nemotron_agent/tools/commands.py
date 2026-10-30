@@ -102,6 +102,13 @@ BLOCKED_INLINE_CODE_FLAGS: frozenset[str] = frozenset(
 )
 
 DEFAULT_ALLOWED_COMMAND_PREFIXES: tuple[tuple[str, ...], ...] = (
+    # Common inspection & file search tools
+    ("grep",),
+    ("find",),
+    ("cat",),
+    ("head",),
+    ("tail",),
+    ("wc",),
     # Python test, lint, typecheck, format
     ("pytest",),
     ("python", "-m", "pytest"),

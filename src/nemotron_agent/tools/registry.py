@@ -201,6 +201,21 @@ class ToolRegistry:
                 f"Arguments for tool '{name}' must decode to a JSON object, got {type(parsed_dict).__name__}."
             )
 
+        # Smart defaults for read_file when only start_line or only end_line is given
+        if name == "read_file" and isinstance(parsed_dict, dict):
+            if "start_line" in parsed_dict and "end_line" not in parsed_dict:
+                try:
+                    s_line = int(parsed_dict["start_line"])
+                    parsed_dict["end_line"] = s_line + 199
+                except (ValueError, TypeError):
+                    pass
+            elif "end_line" in parsed_dict and "start_line" not in parsed_dict:
+                try:
+                    e_line = int(parsed_dict["end_line"])
+                    parsed_dict["start_line"] = max(1, e_line - 199)
+                except (ValueError, TypeError):
+                    pass
+
         try:
             validated_args = tool.args_model.model_validate(parsed_dict)
         except ValidationError as exc:

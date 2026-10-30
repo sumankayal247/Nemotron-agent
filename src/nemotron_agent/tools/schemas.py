@@ -92,6 +92,7 @@ class ReadFileArgs(BaseModel):
     @model_validator(mode="after")
     def _check_line_window(self) -> "ReadFileArgs":
         if self.end_line < self.start_line:
+            # If the model explicitly provided start_line > end_line, raise ValueError
             raise ValueError("`end_line` must be greater than or equal to `start_line`.")
         if (self.end_line - self.start_line + 1) > 400:
             raise ValueError("Cannot read more than 400 lines in a single `read_file` call.")
